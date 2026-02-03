@@ -4,14 +4,37 @@
   "description": "CLI tool that diffs what humans see vs what AI agents process",
   "type": "module",
   "bin": {
-    "wysiwyg": "./src/cli/cli.ts"
+    "wysiwyg": "./bin/wysiwyg.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "security",
+    "prompt-injection",
+    "unicode",
+    "hidden-text",
+    "ai-safety",
+    "llm",
+    "cli",
+    "scanner",
+    "cloaking",
+    "bidi"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DeveshParagiri/wysiwyg.git"
+  },
+  "author": "Devesh Paragiri",
+  "license": "MIT",
   "scripts": {
     "dev": "bun run src/cli/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --minify src/cli/cli.ts --outfile dist/wysiwyg",
-    "build:npm": "bun build --target=node --outdir dist src/cli/cli.ts"
+    "build": "bun build --compile --minify src/cli/cli.ts --outfile dist/wysiwyg"
   },
   "dependencies": {
     "commander": "^13.1.0",
