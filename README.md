@@ -53,48 +53,22 @@ wysiwyg fetch https://example.com
 
 ## What it detects
 
-wysiwyg runs 5 detection layers:
+| Layer | Attack | What it catches | Severity |
+|---|---|---|---|
+| **1. Invisible Unicode** | Unicode Tags (U+E0000–U+E007F) | Hidden ASCII text encoded as invisible codepoints | Critical |
+| | Zero-width characters | ZWSP, ZWNJ, ZWJ, BOM, Word Joiner | Context-aware* |
+| | Bidi overrides | Text direction reversal to hide content | Critical |
+| | Variation selectors | Glyph rendering alterations | Info |
+| | Invisible math operators | Function application, invisible times/separator/plus | Warning |
+| **2. Rendered hiding** | CSS hiding | `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, off-screen positioning | Critical |
+| | Color hiding | White-on-white, near-zero contrast (WCAG), transparent foreground | Critical |
+| | Hidden elements | `[hidden]` attribute, HTML comments, Markdown comments | Warning |
+| | PDF | Extremely small-scale text | Warning |
+| **3. Cloaking** | Server-side cloaking | Fetches URL with 6 user-agents (Chrome, ClaudeBot, ChatGPT-User, PerplexityBot, Googlebot, curl), normalizes responses, diffs for material differences (>10 chars) | Critical |
+| **4. Config poisoning** | AI config files | Scans `.cursorrules`, `.windsurfrules`, `copilot-instructions.md`, `.claude/settings.json`, `mcp.json`, `AGENTS.md` and others for invisible Unicode, non-ASCII in ASCII-expected files, and 10 prompt injection patterns | Critical |
+| **5. Clipboard** | Rich clipboard HTML | Compares plain text vs rich HTML clipboard content for CSS-based hiding and color tricks in copy-paste attacks | Critical |
 
-### Layer 1 — Invisible Unicode
-
-Detects characters that encode hidden text invisible to humans but tokenized by LLMs:
-
-- **Unicode Tags** (U+E0000-U+E007F) — encode hidden ASCII text, always critical
-- **Zero-width characters** — ZWSP, ZWNJ, ZWJ, BOM, Word Joiner
-- **Bidi overrides** — reverse text display to hide content
-- **Variation selectors** — alter glyph rendering
-- **Invisible math operators** — function application, invisible times/separator/plus
-
-Severity is context-aware. A Zero-Width Joiner in Arabic text is legitimate (info). The same character in an ASCII-only file is suspicious (critical). Detection uses 19-script analysis to avoid false positives in multilingual content.
-
-### Layer 2 — Rendered content hiding
-
-Renders Markdown, HTML, and PDF to visible text, then diffs against the raw source to find content humans can't see:
-
-- CSS hiding: `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, off-screen positioning
-- Color hiding: white-on-white text, near-zero contrast (WCAG analysis), transparent foreground
-- Hidden elements: `[hidden]` attribute, HTML comments, Markdown comments
-- PDF: extremely small-scale text
-
-### Layer 3 — Server-side cloaking
-
-Fetches a URL with 6 different user-agents (Chrome, ClaudeBot, ChatGPT-User, PerplexityBot, Googlebot, curl), normalizes responses to strip dynamic content (CSRF tokens, timestamps, nonces), and diffs the results. If a server returns materially different content (>10 chars) to an AI bot vs a browser, it's flagged as critical.
-
-### Layer 4 — Config file poisoning
-
-Scans known AI agent config files for hidden payloads:
-
-- `.cursorrules`, `.windsurfrules`
-- `.github/copilot-instructions.md`
-- `.claude/settings.json`, `.claude/commands/**`
-- `mcp.json`, `.mcprc`
-- `AGENTS.md`
-
-Checks for non-ASCII characters in ASCII-expected files (homograph attacks), invisible Unicode (elevated to critical severity in config files), and 10 prompt injection regex patterns ("ignore previous instructions", "you are now", etc.).
-
-### Layer 5 — Clipboard integrity
-
-Reads system clipboard as both plain text and rich HTML. Detects CSS-based hiding and color tricks in rich clipboard content — catches copy-paste prompt injection attacks where visible text looks clean but the HTML carries hidden instructions.
+*\*Zero-width characters are context-aware: ZWJ in Arabic text → legitimate (suppressed). Same character in an ASCII-only file → critical. Uses 19-script analysis to reduce false positives.*
 
 ## What it can and can't do
 
