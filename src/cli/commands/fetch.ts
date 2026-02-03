@@ -67,7 +67,8 @@ export async function fetchCommand(
       process.exit(1);
     }
   } catch (err) {
-    console.error(`Error: ${err}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${message}`);
     process.exit(2);
   }
 }

@@ -252,6 +252,9 @@ export function formatSummary(results: ScanResult[]): string {
 
   // File list with dynamic padding based on longest path
   const dirtyResults = results.filter((r) => !r.clean);
+  if (dirtyResults.length === 0) {
+    return lines.join("\n");
+  }
   const relPaths = dirtyResults.map((r) => toRelativePath(r.source));
   const maxPathLen = Math.max(...relPaths.map((p) => p.length));
   const padWidth = Math.min(maxPathLen + 2, 60); // cap at 60
