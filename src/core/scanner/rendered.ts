@@ -12,6 +12,7 @@ import { isColorHidden } from "../utils/color.js";
 import { getSourceContext, buildDiffViews } from "../utils/context.js";
 import MarkdownIt from "markdown-it";
 import * as cheerio from "cheerio";
+import type { AnyNode } from "domhandler";
 
 const md = new MarkdownIt();
 
@@ -181,7 +182,7 @@ export function scanMarkdown(content: string): Finding[] {
 /**
  * Get the line number of an element in the source HTML.
  */
-function getElementLine(content: string, $: cheerio.CheerioAPI, el: cheerio.Element): number {
+function getElementLine(content: string, $: cheerio.CheerioAPI, el: AnyNode): number {
   const html = $.html(el) || "";
   const idx = content.indexOf(html);
   if (idx === -1) return 1;
