@@ -1,5 +1,10 @@
 # wysiwyg
 
+[![CI](https://github.com/DeveshParagiri/wysiwyg/actions/workflows/ci.yml/badge.svg)](https://github.com/DeveshParagiri/wysiwyg/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/DeveshParagiri/wysiwyg)](https://github.com/DeveshParagiri/wysiwyg/releases)
+[![npm version](https://img.shields.io/npm/v/wysiwyg-shield)](https://www.npmjs.com/package/wysiwyg-shield)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A CLI tool that diffs what humans see vs what AI agents process, exposing hidden prompt injection payloads before they reach your agent.
 
 AI agents read text differently than humans. Invisible Unicode, hidden HTML/CSS, server-side cloaking, and poisoned config files can inject instructions that humans never see but agents blindly follow. This tool catches that gap.
