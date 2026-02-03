@@ -1,6 +1,6 @@
 {
   "name": "wysiwyg-shield",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CLI tool that diffs what humans see vs what AI agents process",
   "type": "module",
   "bin": {

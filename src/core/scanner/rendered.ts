@@ -12,6 +12,7 @@ import { isColorHidden } from "../utils/color.js";
 import { getSourceContext, buildDiffViews } from "../utils/context.js";
 import MarkdownIt from "markdown-it";
 import * as cheerio from "cheerio";
+import type { AnyNode } from "domhandler";
 
 const md = new MarkdownIt();
 
@@ -181,7 +182,7 @@ export function scanMarkdown(content: string): Finding[] {
 /**
  * Get the line number of an element in the source HTML.
  */
-function getElementLine(content: string, $: cheerio.CheerioAPI, el: cheerio.Element): number {
+function getElementLine(content: string, $: cheerio.CheerioAPI, el: AnyNode): number {
   const html = $.html(el) || "";
   const idx = content.indexOf(html);
   if (idx === -1) return 1;
@@ -349,7 +350,7 @@ export async function scanPDF(
         const text = textItem.str;
 
         // Check for very small text (transform[0] and transform[3] are scale values)
-        if (textItem.transform) {
+        if (textItem.transform && textItem.transform.length >= 4) {
           const scaleX = Math.abs(textItem.transform[0]);
           const scaleY = Math.abs(textItem.transform[3]);
           if ((scaleX < 1 || scaleY < 1) && text.trim().length > 0) {
@@ -372,7 +373,7 @@ export async function scanPDF(
       message: `Could not fully parse PDF: ${filePath}`,
       humanView: "",
       agentView: "",
-      detail: String(err),
+      detail: err instanceof Error ? err.message : String(err),
     });
   }
 

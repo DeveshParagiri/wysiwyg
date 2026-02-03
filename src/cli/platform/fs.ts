@@ -23,9 +23,12 @@ export function matchesIgnorePattern(
   const normalized = filePath.replace(/\\/g, "/");
   for (const pattern of patterns) {
     if (pattern.includes("**")) {
-      // Match directory prefix
-      const prefix = pattern.replace("/**", "").replace("**", "");
-      if (normalized.includes(prefix)) return true;
+      // Match directory prefix (e.g., ".git/**" should match ".git/foo" but not ".github/foo")
+      const prefix = pattern.replace("/**", "");
+      // Check for exact directory match: starts with "prefix/" or equals "prefix"
+      if (normalized === prefix || normalized.startsWith(prefix + "/")) return true;
+      // Also check for prefix appearing as a directory segment in the middle
+      if (normalized.includes("/" + prefix + "/")) return true;
     } else if (pattern.startsWith("*.")) {
       // Extension match
       const ext = pattern.slice(1);

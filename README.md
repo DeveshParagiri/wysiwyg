@@ -1,5 +1,10 @@
 # wysiwyg
 
+[![CI](https://github.com/DeveshParagiri/wysiwyg/actions/workflows/ci.yml/badge.svg)](https://github.com/DeveshParagiri/wysiwyg/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/DeveshParagiri/wysiwyg)](https://github.com/DeveshParagiri/wysiwyg/releases)
+[![npm version](https://img.shields.io/npm/v/wysiwyg-shield)](https://www.npmjs.com/package/wysiwyg-shield)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A CLI tool that diffs what humans see vs what AI agents process, exposing hidden prompt injection payloads before they reach your agent.
 
 AI agents read text differently than humans. Invisible Unicode, hidden HTML/CSS, server-side cloaking, and poisoned config files can inject instructions that humans never see but agents blindly follow. This tool catches that gap.
@@ -53,40 +58,40 @@ wysiwyg fetch https://example.com
 
 ## What it detects
 
-| Layer | Attack | What it catches | Severity |
-|---|---|---|---|
-| **1. Invisible Unicode** | Unicode Tags (U+E0000–U+E007F) | Hidden ASCII text encoded as invisible codepoints | Critical |
-| | Zero-width characters | ZWSP, ZWNJ, ZWJ, BOM, Word Joiner | Context-aware* |
-| | Bidi overrides | Text direction reversal to hide content | Critical |
-| | Variation selectors | Glyph rendering alterations | Info |
-| | Invisible math operators | Function application, invisible times/separator/plus | Warning |
-| **2. Rendered hiding** | CSS hiding | `display:none`, `visibility:hidden`, `opacity:0`, `font-size:0`, off-screen positioning | Critical |
-| | Color hiding | White-on-white, near-zero contrast (WCAG), transparent foreground | Critical |
-| | Hidden elements | `[hidden]` attribute, HTML comments, Markdown comments | Warning |
-| | PDF | Extremely small-scale text | Warning |
-| **3. Cloaking** | Server-side cloaking | Fetches URL with 6 user-agents (Chrome, ClaudeBot, ChatGPT-User, PerplexityBot, Googlebot, curl), normalizes responses, diffs for material differences (>10 chars) | Critical |
-| **4. Config poisoning** | AI config files | Scans `.cursorrules`, `.windsurfrules`, `copilot-instructions.md`, `.claude/settings.json`, `mcp.json`, `AGENTS.md` and others for invisible Unicode, non-ASCII in ASCII-expected files, and 10 prompt injection patterns | Critical |
-| **5. Clipboard** | Rich clipboard HTML | Compares plain text vs rich HTML clipboard content for CSS-based hiding and color tricks in copy-paste attacks | Critical |
+| # | Layer | Attack | What it catches | Severity |
+|---|---|---|---|---|
+| 1.1 | **Invisible Unicode** | Unicode Tags (U+E0000–U+E007F) | Hidden ASCII as invisible codepoints | Critical |
+| 1.2 | | Zero-width characters | ZWSP, ZWNJ, ZWJ, BOM, Word Joiner | Context-aware* |
+| 1.3 | | Bidi overrides | Text direction reversal | Critical |
+| 1.4 | | Variation selectors | Glyph rendering alterations | Info |
+| 1.5 | | Invisible math operators | Invisible times/separator/plus | Warning |
+| 2.1 | **Rendered hiding** | CSS hiding | `display:none`, `opacity:0`, `font-size:0`, off-screen | Critical |
+| 2.2 | | Color hiding | White-on-white, low contrast, transparent | Critical |
+| 2.3 | | Hidden elements | `[hidden]`, HTML/Markdown comments | Warning |
+| 2.4 | | PDF | Extremely small-scale text | Warning |
+| 3 | **Cloaking** | Server-side cloaking | Diffs 6 user-agents; flags >10 char differences | Critical |
+| 4 | **Config poisoning** | AI config files | Invisible Unicode + injection patterns in `.cursorrules`, `mcp.json`, etc. | Critical |
+| 5 | **Clipboard** | Rich clipboard HTML | Diffs plain text vs HTML for hidden content | Critical |
 
 *\*Zero-width characters are context-aware: ZWJ in Arabic text → legitimate (suppressed). Same character in an ASCII-only file → critical. Uses 19-script analysis to reduce false positives.*
 
 ## What it can and can't do
 
-| Capability | Status | Notes |
+| | Capability | Notes |
 |---|---|---|
-| Invisible Unicode detection | **Detects** | Tags, zero-width, bidi, variation selectors, invisible math |
-| CSS/HTML content hiding | **Detects** | display:none, opacity:0, font-size:0, color hiding, off-screen |
-| Server-side cloaking | **Detects** | Compares responses across 6 user-agents |
-| Config file poisoning | **Detects** | Scans 10+ known AI config files for injection patterns |
-| Clipboard rich-text hiding | **Detects** | Compares plain text vs HTML clipboard content |
-| PDF hidden text | **Detects** | Small-scale text in PDF documents |
-| Multilingual false positives | **Handles** | 19-script context-aware severity reduces noise |
-| Semantic prompt injection | **Does not detect** | If an instruction is plainly visible in the text ("please ignore your system prompt"), this tool won't flag it. It only catches content that is *hidden* from human view. Semantic injection requires a different approach (intent classification at the model layer). |
-| Client-side JS cloaking | **Does not detect** | JavaScript that runs in-browser to modify content after page load is not caught. Layer 3 only compares server responses. |
-| Image-based attacks | **Does not detect** | Steganography, OCR-only text in images, or visual prompt injection in screenshots are out of scope. |
-| Authenticated content | **Does not detect** | Cloaking detection can't compare responses behind login walls or session-gated content. |
-| Encrypted/obfuscated payloads | **Does not detect** | Base64-encoded or otherwise obfuscated instructions in plain text are not flagged. |
-| Windows clipboard | **Not supported** | Clipboard scanning works on macOS and Linux only. |
+| ✅ | Invisible Unicode | Tags, zero-width, bidi, variation selectors, invisible math |
+| ✅ | CSS/HTML content hiding | display:none, opacity:0, font-size:0, color hiding, off-screen |
+| ✅ | Server-side cloaking | Compares responses across 6 user-agents |
+| ✅ | Config file poisoning | Scans 10+ known AI config files for injection patterns |
+| ✅ | Clipboard rich-text hiding | Compares plain text vs HTML clipboard content |
+| ✅ | PDF hidden text | Small-scale text in PDF documents |
+| ✅ | Multilingual false positives | 19-script context-aware severity reduces noise |
+| ❌ | Semantic prompt injection | Only catches *hidden* content — visible instructions need intent classification at the model layer |
+| ❌ | Client-side JS cloaking | JS that modifies content after page load; Layer 3 only compares server responses |
+| ❌ | Image-based attacks | Steganography, OCR-only text, visual prompt injection in screenshots |
+| ❌ | Authenticated content | Can't compare responses behind login walls or session-gated content |
+| ❌ | Encrypted/obfuscated payloads | Base64-encoded or obfuscated instructions in plain text |
+| ❌ | Windows clipboard | Clipboard scanning works on macOS and Linux only |
 
 ## How it works
 

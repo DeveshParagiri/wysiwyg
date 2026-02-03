@@ -3,7 +3,7 @@ import { scanUnicode } from "../../core/scanner/unicode.js";
 import { scanRendered, scanPDF } from "../../core/scanner/rendered.js";
 import { scanConfigFile, isKnownConfigFile } from "../../core/scanner/configfile.js";
 import { analyzeClipboardHTML } from "../../core/scanner/clipboard.js";
-import { FILE_TYPE_MAP } from "../../core/constants/index.js";
+import { FILE_TYPE_MAP, DEFAULT_CONFIG } from "../../core/constants/index.js";
 import { formatFindings, formatSummary } from "../output/formatter.js";
 import { loadConfig } from "../config/loader.js";
 import { readClipboardHTML } from "../platform/clipboard.js";
@@ -102,11 +102,7 @@ export async function scanCommand(
 ): Promise<void> {
   const format = (options.format || "pretty") as OutputFormat;
   const useConfig = options.config !== false;
-  const config = useConfig ? loadConfig() : {
-    expected_scripts: ["Latin"] as string[],
-    ignore: ["node_modules/**", ".git/**", "dist/**", "build/**", "*.lock"] as string[],
-    fail_on: "critical" as const,
-  };
+  const config = useConfig ? loadConfig() : { ...DEFAULT_CONFIG };
   const failOn = (options.failOn || config.fail_on || "critical") as Severity;
 
   const results: ScanResult[] = [];
@@ -162,7 +158,8 @@ export async function scanCommand(
       if (fileStat.isFile()) {
         results.push(await scanFile(targetPath));
       } else if (fileStat.isDirectory()) {
-        if (options.recursive || !target) {
+        // Default to recursive for directories (use --no-recursive to disable)
+        if (options.recursive !== false) {
           // Recursive scan (default when scanning a directory)
           const files = await walkDirectory(
             targetPath,
@@ -206,7 +203,8 @@ export async function scanCommand(
       process.exit(1);
     }
   } catch (err) {
-    console.error(`Error: ${err}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${message}`);
     process.exit(2);
   }
 }
