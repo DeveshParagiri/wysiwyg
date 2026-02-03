@@ -1,0 +1,1 @@
+﻿This file has a BOM at the start.

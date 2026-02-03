@@ -1,0 +1,1 @@
+Normal text.﻿BOM in the middle of the file.

@@ -1,0 +1,1 @@
+Normal text ‮this is reversed‬ more text.
