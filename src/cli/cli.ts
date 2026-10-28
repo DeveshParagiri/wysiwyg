@@ -12,6 +12,12 @@ const failOnOption = () =>
     "info",
   ]);
 
+// Exit codes: 0 clean, 1 findings, 2 usage or runtime error. Commander exits 1 on
+// usage errors by default, which CI would read as "findings".
+program.exitOverride((err) => {
+  process.exit(err.exitCode === 0 ? 0 : 2);
+});
+
 program
   .name("wysiwyg")
   .description(

@@ -14,7 +14,7 @@ const PATTERNS: readonly RegExp[] = [
   /\b(do not|don't|never)\s+(tell|inform|mention|alert|notify)\b[^.\n]{0,30}\bthe (user|human|developer)\b/i,
   /\bwithout\s+(telling|informing|notifying|alerting)\s+the (user|human|developer)\b/i,
   /\b(curl|wget|iwr)\b[^\n]{0,160}\|\s*(ba|z|da)?sh\b/i,
-  /\b(send|post|upload|exfiltrate|transmit)\b[^.\n]{0,60}\b(\.env|ssh keys?|id_rsa|credentials|api[ _-]?keys?|private keys?)\b[^.\n]{0,40}\b(to|https?:)/i,
+  /\b(send|post|upload|exfiltrate|transmit)\b[^.\n]{0,60}(\.env\b|\b(ssh keys?|id_rsa|credentials|api[ _-]?keys?|private keys?)\b)[^.\n]{0,40}\b(to|https?:)/i,
 ];
 
 export function scanVisibleInjection(content: string): Finding[] {

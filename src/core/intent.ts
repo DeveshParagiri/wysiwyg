@@ -43,7 +43,7 @@ const RAW_PATTERNS: readonly RegExp[] = [
   /\b(execute|run) (this|the following|these) (command|commands|code|script) (now|immediately|silently|without)\b/i,
   /\b(call|invoke) the [\w.-]+ tool\b/i,
   // Exfiltration: secret + destination
-  /\b(send|post|upload|exfiltrate|forward|transmit|leak|append)\b[^.\n]{0,60}\b(\.env|ssh keys?|id_rsa|credentials?|api[ _-]?keys?|secrets?|access tokens?|passwords?|private keys?|conversation|chat history)\b[^.\n]{0,60}\bto\s+(https?:\/\/|(this|the following|my|our|an?) (url|endpoint|server|address|email|webhook)\b|webhook\b)/i,
+  /\b(send|post|upload|exfiltrate|forward|transmit|leak|append)\b[^.\n]{0,60}(\.env\b|\b(ssh keys?|id_rsa|credentials?|api[ _-]?keys?|secrets?|access tokens?|passwords?|private keys?|conversation|chat history)\b)[^.\n]{0,60}\bto\s+(https?:\/\/|(this|the following|my|our|an?) (url|endpoint|server|address|email|webhook)\b|webhook\b)/i,
   /\b(read|cat|open|print)\b[^.\n]{0,30}(~\/\.ssh|\.env\b|\.aws\/|\.npmrc|\.netrc|id_rsa|\.git-credentials)/i,
   /!\[[^\]]*\]\(https?:\/\/[^)]*\{[^)]*\}/, // markdown image exfil template
   // Evaluation manipulation (résumés, papers, reviews)

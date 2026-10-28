@@ -1,8 +1,10 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
  * Files changed relative to a git ref (--diff) or staged for commit
- * (--staged), as absolute paths. Deleted files are excluded.
+ * (--staged), as absolute real paths (symlinks resolved, so callers must
+ * compare against realpath() too). Deleted files are excluded.
  */
 export async function changedFiles(
   dir: string,
@@ -15,7 +17,7 @@ export async function changedFiles(
     }
     return proc.stdout.toString();
   };
-  const top = git(["rev-parse", "--show-toplevel"]).trim();
+  const top = realpathSync(git(["rev-parse", "--show-toplevel"]).trim());
   const args = opts.staged
     ? ["diff", "--name-only", "--diff-filter=ACMRT", "--cached", "-z"]
     : ["diff", "--name-only", "--diff-filter=ACMRT", "-z", opts.diff!];

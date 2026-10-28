@@ -123,7 +123,9 @@ export function detectScript(codepoint: number): string {
   if (
     (codepoint >= 0x4e00 && codepoint <= 0x9fff) ||
     (codepoint >= 0x3400 && codepoint <= 0x4dbf) ||
-    (codepoint >= 0x3000 && codepoint <= 0x303f)
+    (codepoint >= 0x3000 && codepoint <= 0x30ff) || // CJK punctuation, Hiragana, Katakana
+    (codepoint >= 0x31f0 && codepoint <= 0x31ff) ||
+    (codepoint >= 0xff00 && codepoint <= 0xffef)
   ) {
     return "CJK";
   }

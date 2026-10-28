@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { analyzeClipboardHTML } from "../../core/clipboard.js";
 import { DEFAULT_CONFIG, MAX_FILE_SIZE } from "../../core/constants/index.js";
@@ -117,7 +117,7 @@ export async function scanCommand(target: string | undefined, options: ScanOptio
         if (options.recursive === false) files = files.filter((f) => !f.rel.includes("/"));
         if (options.diff || options.staged) {
           const changed = await changedFiles(targetPath, { diff: options.diff, staged: options.staged });
-          files = files.filter((f) => changed.has(resolve(f.path)));
+          files = files.filter((f) => changed.has(realpathSync(f.path)));
         }
         if (format === "pretty")
           console.error(`Scanning ${files.length} file${files.length === 1 ? "" : "s"}…`);

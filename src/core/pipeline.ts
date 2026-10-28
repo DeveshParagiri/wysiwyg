@@ -46,9 +46,13 @@ export function detectKind(path: string, bytes: Uint8Array): DocKind {
   if (HTML_EXT.test(path)) return "html";
   if (MARKDOWN_EXT.test(path)) return "markdown";
 
-  const head = new TextDecoder("utf-8").decode(bytes.subarray(0, 1024)).replace(/^﻿/, "").trimStart();
+  const head = new TextDecoder("utf-8")
+    .decode(bytes.subarray(0, 1024))
+    .replace(/^\ufeff/, "")
+    .trimStart();
   if (/^<svg[\s>]/i.test(head) || (/^<\?xml/i.test(head) && /<svg[\s>]/i.test(head))) return "svg";
   if (/^<!doctype html|^<html[\s>]/i.test(head)) return "html";
+  if (startsWith(bytes, [0xff, 0xfe]) || startsWith(bytes, [0xfe, 0xff])) return "text"; // UTF-16 with BOM
   if (looksBinary(bytes)) return "binary";
   return "text";
 }

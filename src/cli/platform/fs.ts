@@ -40,11 +40,6 @@ export function matchesIgnorePattern(filePath: string, patterns: string[]): bool
   return false;
 }
 
-/** Could a file inside this directory be an agent instruction file? */
-function mayHoldAgentFiles(relDir: string): boolean {
-  return isAgentInstructionFile(`${relDir}/x`);
-}
-
 /**
  * Walk a directory. Follows symlinks (agents do), guards against cycles, and
  * never lets ignore patterns hide agent instruction files.
@@ -87,7 +82,8 @@ export async function walkDirectory(root: string, ignorePatterns: string[]): Pro
         if (visitedDirs.has(real)) continue;
         visitedDirs.add(real);
         if (ignored || agentFilesOnly) {
-          if (mayHoldAgentFiles(rel)) await walk(full, true);
+          // Agent instruction files can live anywhere (vendor/AGENTS.md, build/SKILL.md…)
+          await walk(full, true);
           continue;
         }
         await walk(full, false);
