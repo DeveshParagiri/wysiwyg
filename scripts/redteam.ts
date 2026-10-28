@@ -16,10 +16,10 @@
  *              be reported (info+). This keeps scores honest: a case cannot
  *              pass only because the payload happens to match a phrase list.
  */
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
-import { cases, neutralCases, CHANNEL_IDS, type RedteamCase } from "../tests/redteam/cases.ts";
+import { dirname, join, resolve } from "node:path";
+import { CHANNEL_IDS, cases, neutralCases, type RedteamCase } from "../tests/redteam/cases.ts";
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
@@ -50,11 +50,11 @@ function writeCase(c: RedteamCase): string {
 }
 
 function collectSeverities(x: unknown, out: string[] = []): string[] {
-  if (Array.isArray(x)) x.forEach((v) => collectSeverities(v, out));
+  if (Array.isArray(x)) for (const v of x) collectSeverities(v, out);
   else if (x && typeof x === "object") {
     const o = x as Record<string, unknown>;
     if (typeof o.severity === "string" && (o.type || o.ruleId)) out.push(o.severity);
-    Object.values(o).forEach((v) => collectSeverities(v, out));
+    for (const v of Object.values(o)) collectSeverities(v, out);
   }
   return out;
 }
@@ -71,7 +71,10 @@ interface Row {
 
 function score(c: RedteamCase, run: Row["run"]): Row {
   const dir = writeCase(c);
-  const proc = Bun.spawnSync(["bun", "run", cli, "scan", ".", "--format", "json"], { cwd: dir, stderr: "pipe" });
+  const proc = Bun.spawnSync(["bun", "run", cli, "scan", ".", "--format", "json"], {
+    cwd: dir,
+    stderr: "pipe",
+  });
   rmSync(dirname(dir), { recursive: true, force: true });
   let top = "none";
   let outcome: Row["outcome"];
@@ -101,7 +104,9 @@ if (asJson) {
 } else {
   for (const r of rows) {
     if (!verbose && r.outcome === "pass") continue;
-    console.log(`${r.outcome === "pass" ? "✓" : "✗"} ${r.run.padEnd(7)} ${r.id.padEnd(4)} ${r.expect.padEnd(6)} ${r.top.padEnd(9)} ${r.note}`);
+    console.log(
+      `${r.outcome === "pass" ? "✓" : "✗"} ${r.run.padEnd(7)} ${r.id.padEnd(4)} ${r.expect.padEnd(6)} ${r.top.padEnd(9)} ${r.note}`,
+    );
   }
   const pass = (rs: Row[]) => rs.filter((r) => r.outcome === "pass").length;
   const attack = rows.filter((r) => r.run === "attack" && r.expect === "detect");
