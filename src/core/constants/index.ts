@@ -1,23 +1,10 @@
-export { USER_AGENTS } from "./user-agents.js";
-export { UNICODE_RANGES, JOINING_SCRIPTS } from "./unicode.js";
-export { KNOWN_CONFIG_FILES, INJECTION_PATTERNS } from "./config-files.js";
-export { HIDDEN_CSS_INDICATORS, HIDDEN_COLOR_KEYWORDS } from "./css.js";
+export { isAgentInstructionFile, isKnownConfigFile } from "./agent-files.js";
 export {
   DEFAULT_CONFIG,
-  FILE_TYPE_MAP,
-  MAX_FILE_SIZE,
   FETCH_TIMEOUT,
-  MIN_CLOAKING_DIFF_CHARS,
   LOW_CONTRAST_THRESHOLD,
+  MAX_FILE_SIZE,
   NEAR_WHITE_THRESHOLD,
-  UNICODE_CONTEXT_RADIUS,
-  BINARY_CHECK_BYTES,
   PREVIEW_SHORT,
-  PREVIEW_MEDIUM,
-  PREVIEW_LONG,
-  PREVIEW_DETAIL,
-  ASCII_ONLY_EXTENSIONS,
-  CSS_FG_COLOR_RE,
-  CSS_BG_COLOR_RE,
-  HTML_COMMENT_RE,
 } from "./defaults.js";
+export { AGENT_CLIENTS, BROWSER, type ClientProfile, USER_AGENTS } from "./user-agents.js";
