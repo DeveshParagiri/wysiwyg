@@ -32,11 +32,7 @@ async function readMacOSClipboard(): Promise<ClipboardContent> {
   // Read HTML format
   let html: string | null = null;
   try {
-    const htmlProc = Bun.spawnSync([
-      "osascript",
-      "-e",
-      'the clipboard as «class HTML»',
-    ]);
+    const htmlProc = Bun.spawnSync(["osascript", "-e", "the clipboard as «class HTML»"]);
     const output = htmlProc.stdout.toString().trim();
 
     // Parse the hex output: «data HTML...»
@@ -62,38 +58,20 @@ async function readLinuxClipboard(): Promise<ClipboardContent> {
   let plainText = "";
 
   try {
-    const htmlProc = Bun.spawnSync([
-      "xclip",
-      "-selection",
-      "clipboard",
-      "-t",
-      "text/html",
-      "-o",
-    ]);
+    const htmlProc = Bun.spawnSync(["xclip", "-selection", "clipboard", "-t", "text/html", "-o"]);
     if (htmlProc.exitCode === 0) {
       html = htmlProc.stdout.toString().trim();
     }
 
-    const plainProc = Bun.spawnSync([
-      "xclip",
-      "-selection",
-      "clipboard",
-      "-o",
-    ]);
+    const plainProc = Bun.spawnSync(["xclip", "-selection", "clipboard", "-o"]);
     plainText = plainProc.stdout.toString().trim();
   } catch {
     // xclip not available, try xsel
     try {
-      const plainProc = Bun.spawnSync([
-        "xsel",
-        "--clipboard",
-        "--output",
-      ]);
+      const plainProc = Bun.spawnSync(["xsel", "--clipboard", "--output"]);
       plainText = plainProc.stdout.toString().trim();
     } catch {
-      throw new Error(
-        "Neither xclip nor xsel found. Install one of them to read clipboard.",
-      );
+      throw new Error("Neither xclip nor xsel found. Install one of them to read clipboard.");
     }
   }
 
