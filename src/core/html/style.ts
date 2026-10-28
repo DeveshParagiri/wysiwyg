@@ -1,6 +1,7 @@
 import type { CheerioAPI } from "cheerio";
 import * as csstree from "css-tree";
 import type { Element } from "domhandler";
+import { mediaMatches } from "./media.js";
 
 /**
  * A small CSS cascade: enough to know, for every element, the declared value
@@ -88,8 +89,6 @@ export function parseDeclarations(css: string): { prop: string; value: string; i
   }
 }
 
-const SKIP_MEDIA = /\b(print|speech)\b/i;
-
 /** Resolve declared styles for every element in the document. */
 export function computeDeclaredStyles($: CheerioAPI): Map<Element, StyleMap> {
   const decls = new Map<Element, Decl[]>();
@@ -113,15 +112,9 @@ export function computeDeclaredStyles($: CheerioAPI): Map<Element, StyleMap> {
       visit: "Rule",
       enter(this: csstree.WalkContext, rule: csstree.Rule) {
         const at = this.atrule;
-        if (at && at.name === "media" && at.prelude && SKIP_MEDIA.test(csstree.generate(at.prelude))) return;
-        if (
-          at &&
-          at.name !== "media" &&
-          at.name !== "supports" &&
-          at.name !== "layer" &&
-          at.name !== "container"
-        )
-          return;
+        if (at?.name === "media" && !mediaMatches(at.prelude ? csstree.generate(at.prelude) : "")) return;
+        // @container depends on layout we don't compute; other at-rules don't hold style rules we can apply.
+        if (at && !["media", "supports", "layer"].includes(at.name)) return;
         const ruleDecls = (rule.block.children.toArray() as csstree.CssNode[]).flatMap((d) =>
           d.type === "Declaration"
             ? [
