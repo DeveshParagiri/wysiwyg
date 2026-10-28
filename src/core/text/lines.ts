@@ -1,0 +1,94 @@
+/**
+ * Line bookkeeping and safe display helpers shared by all text scanners.
+ */
+
+/** Maps character offsets to 1-indexed lines in O(log n). */
+export class LineIndex {
+  private starts: number[] = [0];
+  readonly lines: string[];
+
+  constructor(readonly content: string) {
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) this.starts.push(i + 1);
+    }
+    this.lines = content.split("\n");
+  }
+
+  lineOf(offset: number): number {
+    let lo = 0;
+    let hi = this.starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  }
+
+  columnOf(offset: number): number {
+    return offset - this.starts[this.lineOf(offset) - 1] + 1;
+  }
+
+  /** Line text (1-indexed), without a trailing CR. */
+  line(n: number): string {
+    return (this.lines[n - 1] ?? "").replace(/\r$/, "");
+  }
+
+  /** Lines [n - radius, n + radius] as { lineNum, text }. */
+  around(n: number, radius = 1): { lineNum: number; text: string }[] {
+    const out = [];
+    for (let i = Math.max(1, n - radius); i <= Math.min(this.lines.length, n + radius); i++) {
+      out.push({ lineNum: i, text: this.line(i) });
+    }
+    return out;
+  }
+
+  /** First line containing `needle` (searching from `from`), or undefined. */
+  find(needle: string, from = 0): number | undefined {
+    if (!needle) return undefined;
+    const i = this.content.indexOf(needle, from);
+    return i === -1 ? undefined : this.lineOf(i);
+  }
+}
+
+/** Characters that never render visibly: format, default-ignorable, private use, controls. */
+const INVISIBLE_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Co}⠀ㅤﾠᅟᅠ]/u;
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/;
+
+export function isInvisibleChar(ch: string): boolean {
+  return INVISIBLE_RE.test(ch);
+}
+
+/**
+ * Make a string safe to print and show what is really there: control and
+ * invisible characters become ⟨U+XXXX⟩ markers. Scanned content must never
+ * reach the terminal raw — an ANSI payload could rewrite the report itself.
+ */
+export function visualize(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    if (ch === "\n" || ch === "\t") out += ch;
+    else if (CONTROL_RE.test(ch) || INVISIBLE_RE.test(ch)) out += codepointLabel(ch.codePointAt(0)!);
+    else out += ch;
+  }
+  return out;
+}
+
+/** Remove invisible and control characters: roughly what a human sees. */
+export function stripInvisible(s: string): string {
+  let out = "";
+  for (const ch of s) {
+    if (ch === "\n" || ch === "\t") out += ch;
+    else if (!CONTROL_RE.test(ch) && !INVISIBLE_RE.test(ch)) out += ch;
+  }
+  return out;
+}
+
+export function codepointLabel(cp: number): string {
+  return `⟨U+${cp.toString(16).toUpperCase().padStart(4, "0")}⟩`;
+}
+
+export function hex(cp: number): string {
+  return `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+}
