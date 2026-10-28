@@ -50,19 +50,26 @@ describe("formatJSON", () => {
 
 describe("formatSummary", () => {
   test("counts dirty files", () => {
-    expect(stripSgr(formatSummary([result("a.txt", []), result("b.txt", [])]))).toContain("0/2");
+    expect(stripSgr(formatSummary([result("a.txt", []), result("b.txt", [])]))).toContain("0 of 2 files");
   });
 
-  test("lists dirty files with severity counts", () => {
+  test("totals only, when few files have findings", () => {
     const s = stripSgr(
       formatSummary([result("dirty.txt", [finding("critical"), finding("info")]), result("clean.txt", [])], {
         cwd: "/",
       }),
     );
-    expect(s).toContain("1/2");
-    expect(s).toContain("dirty.txt");
+    expect(s).toContain("1 of 2 files");
     expect(s).toContain("1 critical");
     expect(s).toContain("1 info");
+    expect(s).not.toContain("dirty.txt");
+  });
+
+  test("recaps each dirty file when there are many", () => {
+    const dirty = ["a", "b", "c", "d"].map((n) => result(`${n}.txt`, [finding("warning")]));
+    const s = stripSgr(formatSummary([...dirty, result("clean.txt", [])], { cwd: "/" }));
+    expect(s).toContain("4 of 5 files");
+    for (const n of ["a", "b", "c", "d"]) expect(s).toContain(`${n}.txt`);
     expect(s).not.toContain("clean.txt");
   });
 });
@@ -93,9 +100,9 @@ describe("formatFindings: pretty", () => {
     );
     expect(out).toContain("test.txt");
     expect(out).toContain("CRITICAL");
-    expect(out).toContain(":5");
+    expect(out).toContain("line 5");
     expect(out).toContain("Hidden Unicode Tags");
-    expect(out).toContain("[test/critical]");
+    expect(out).toContain("test/critical");
   });
 
   test("location is shown when there is no line", () => {
@@ -134,7 +141,7 @@ describe("formatFindings: pretty", () => {
         { cwd: "/" },
       ),
     );
-    expect(out).toContain("2/3");
+    expect(out).toContain("2 of 3 files");
     expect(out).toContain("a.txt");
     expect(out).toContain("c.txt");
   });
@@ -150,8 +157,9 @@ describe("formatFindings: pretty", () => {
         "pretty",
       ),
     );
-    expect(out).toMatch(/H\s+Hello world/);
-    expect(out).toMatch(/A\s+Hello world SECRET/);
+    expect(out).toMatch(/you see\s+Hello world\n/);
+    // the agent-only text is highlighted (⟦…⟧ when colour is off)
+    expect(out).toMatch(/AI reads\s+Hello world ⟦?SECRET/);
   });
 
   test("paths are shown relative to cwd", () => {

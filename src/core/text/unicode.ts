@@ -202,7 +202,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
     const tags = cps.filter(isTag);
     if (tags.length) {
       const decoded = decodeUnicodeTags(String.fromCodePoint(...tags));
-      const v = views(run, `⟦${decoded}⟧`, "unicode/tags");
+      const v = views(run, decoded, "unicode/tags");
       if (decoded.trim()) {
         findings.push(
           concealedFinding({
@@ -234,7 +234,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
             technique: `${vs.length} variation selectors after "${run.prev}" encode hidden bytes`,
             hiddenText: decoded,
             offset: run.start,
-            ...views(run, `⟦${decoded}⟧`, "unicode/variation-selector-smuggling"),
+            ...views(run, decoded, "unicode/variation-selector-smuggling"),
             detail: "VS1–VS16 → 0–15, VS17–VS256 → 16–255 (UTF-8)",
           }),
         );
@@ -255,7 +255,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
           technique: `${rest.length} invisible characters encode text as binary`,
           hiddenText: binary,
           offset: run.start,
-          ...views(run, `⟦${binary}⟧`, "unicode/invisible-binary"),
+          ...views(run, binary, "unicode/invisible-binary"),
           detail: `symbols: ${syms}`,
         }),
       );
@@ -369,6 +369,10 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
         ruleId === "unicode/bidi-override"
           ? `Bidirectional override can display text in a different order than it is read (${unique.map(codepointName).join(", ")})`
           : `${flagged.length} invisible character${flagged.length > 1 ? "s" : ""}: ${unique.slice(0, 4).map(codepointName).join(", ")}${unique.length > 4 ? ", …" : ""}`,
+      technique:
+        ruleId === "unicode/bidi-override"
+          ? `Bidirectional override reorders displayed text (${unique.map(hex).join(", ")})`
+          : `${flagged.length} invisible character${flagged.length > 1 ? "s" : ""} (${unique.slice(0, 3).map(hex).join(", ")}${unique.length > 3 ? ` +${unique.length - 3} more` : ""})`,
       detail: unique.map(codepointName).join(", "),
     });
   }

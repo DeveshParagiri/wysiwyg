@@ -45,6 +45,8 @@ export interface Finding {
   location?: string; // non-line locations: "page 2", "slide 3", "sheet Notes"
   message: string; // one-line description
   hiddenText?: string; // the concealed content, as the model would read it
+  technique?: string; // how it is hidden, e.g. "display:none on <p.note>"
+  trigger?: string; // for intent "instruction": the phrase that addresses an agent
   intent?: IntentLevel;
   humanView: string; // what the human sees
   agentView: string; // what the agent sees

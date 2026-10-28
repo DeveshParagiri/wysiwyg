@@ -11,6 +11,8 @@ export interface WalkedFile {
   rel: string;
   /** Set when the file was reached through a symlink pointing outside the scan root. */
   outsideTarget?: string;
+  /** How to show the path in reports (defaults to `path`). */
+  display?: string;
 }
 
 /** Directories never worth descending into. */

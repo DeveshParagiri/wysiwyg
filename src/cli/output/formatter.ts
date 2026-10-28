@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import { createPatch } from "diff";
+import { diffWordsWithSpace } from "diff";
 import pc from "picocolors";
 import { visualize } from "../../core/text/lines.js";
 import type { Finding, OutputFormat, ScanResult, Severity } from "../../core/types.js";
@@ -22,28 +22,24 @@ export interface FormatOptions {
 
 // ─── Layout ──────────────────────────────────────────────────────────
 
-const REMOVED_BG = "\x1b[48;5;52m";
-const REMOVED_FG = "\x1b[38;5;210m";
-const ADDED_BG = "\x1b[48;5;22m";
-const ADDED_FG = "\x1b[38;5;114m";
-const RESET = "\x1b[0m";
-const LEFT_PAD = 3;
-const RIGHT_PAD = 2;
+const color = pc.isColorSupported;
+/** Hidden text: dark red background, so the payload stands out inside the "AI reads" row. */
+const hl = (s: string) => (color ? `\x1b[48;5;52m\x1b[38;5;217m${s}\x1b[0m` : `⟦${s}⟧`);
+/** Text the human sees but the agent's copy replaced (e.g. a terminal overwrite). */
+const lo = (s: string) => (color ? pc.dim(pc.strikethrough(s)) : s);
+
+const INDENT = " ".repeat(12);
+const LABEL_WIDTH = 10;
+const MAX_ROW_LINES = 6;
 
 function termWidth(): number {
-  return process.stdout.columns || 100;
-}
-
-/** Pad or truncate to an exact width so background colors form even bars. */
-function fitToWidth(str: string, width: number): string {
-  const chars = [...str];
-  if (chars.length > width) return `${chars.slice(0, width - 1).join("")}…`;
-  return str + " ".repeat(width - chars.length);
+  return Math.max(60, process.stdout.columns || 100);
 }
 
 function displayPath(source: string, cwd?: string): string {
   if (source === "stdin" || source === "clipboard" || /^https?:/.test(source)) return visualize(source);
-  return visualize(relative(cwd ?? process.cwd(), source) || source);
+  const rel = relative(cwd ?? process.cwd(), source);
+  return visualize(rel && !rel.startsWith("..") ? rel : source);
 }
 
 const RANK: Record<Severity, number> = { info: 0, warning: 1, critical: 2 };
@@ -52,35 +48,95 @@ function visible(findings: Finding[], opts: FormatOptions): Finding[] {
   return opts.verbose ? findings : findings.filter((f) => f.severity !== "info");
 }
 
-// ─── Diff block ──────────────────────────────────────────────────────
+// ─── Wrapped, highlighted rows ───────────────────────────────────────
 
-/** Unified H/A diff of what the human sees vs what the agent reads. */
-function formatDiffBlock(finding: Finding): string {
-  const barWidth = termWidth() - LEFT_PAD - RIGHT_PAD;
-  const indent = " ".repeat(LEFT_PAD);
-  const human = visualize(finding.humanView || "");
-  const agent = visualize(finding.agentView || "");
+interface Segment {
+  text: string;
+  style?: (s: string) => string;
+}
 
-  if (human === agent) {
-    return human
-      .split("\n")
-      .map((line) => `${indent}${pc.dim(fitToWidth(`       ${line}`, barWidth))}`)
-      .join("\n");
-  }
-
-  const out: string[] = [];
-  const patch = createPatch("view", `${human}\n`, `${agent}\n`, "", "", { context: 3 });
-  for (const line of patch.split("\n")) {
-    if (/^(Index:|===|---|\+\+\+|@@|\\ No newline)/.test(line)) continue;
-    if (line.startsWith("-")) {
-      out.push(`${indent}${REMOVED_BG}${REMOVED_FG}${fitToWidth(`  H  ${line.slice(1)}`, barWidth)}${RESET}`);
-    } else if (line.startsWith("+")) {
-      out.push(`${indent}${ADDED_BG}${ADDED_FG}${fitToWidth(`  A  ${line.slice(1)}`, barWidth)}${RESET}`);
-    } else if (line.startsWith(" ")) {
-      out.push(`${indent}${pc.dim(fitToWidth(`     ${line.slice(1)}`, barWidth))}`);
+/**
+ * Wrap styled segments to `width` columns (breaking at spaces where possible),
+ * splitting on newlines. Returns at most `maxLines` lines plus a truncation note.
+ */
+function wrap(segments: Segment[], width: number, maxLines = MAX_ROW_LINES): string[] {
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  const flush = () => {
+    lines.push(line);
+    line = "";
+    used = 0;
+  };
+  for (const seg of segments) {
+    for (const [i, part] of seg.text.split("\n").entries()) {
+      if (i > 0) flush();
+      let rest = part;
+      while (rest.length) {
+        const room = width - used;
+        let take = rest.length <= room ? rest.length : rest.lastIndexOf(" ", room);
+        if (take <= 0) take = used === 0 ? room : 0;
+        if (take === 0) {
+          flush();
+          rest = rest.replace(/^ /, "");
+          continue;
+        }
+        const chunk = rest.slice(0, take);
+        line += seg.style ? seg.style(chunk) : chunk;
+        used += chunk.length;
+        rest = rest.slice(take);
+        if (rest.length) {
+          flush();
+          rest = rest.replace(/^ /, "");
+        }
+      }
     }
   }
-  return out.join("\n");
+  if (line || !lines.length) flush();
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept.push(pc.dim(`… ${lines.length - maxLines} more line(s) — use --format json for the full text`));
+    return kept;
+  }
+  return lines;
+}
+
+/** "you see" / "AI reads" rows, with the agent-only text highlighted. */
+function formatViews(finding: Finding): string[] {
+  const tidy = (v: string) =>
+    visualize(v)
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .join("\n")
+      .trim();
+  const human = tidy(finding.humanView || "");
+  const agent = tidy(finding.agentView || "");
+  if (!human && !agent) return [];
+  const width = termWidth() - INDENT.length - LABEL_WIDTH - 2;
+  const row = (label: string, segments: Segment[]) =>
+    wrap(segments, width).map(
+      (l, i) => `${INDENT}${i === 0 ? pc.dim(label.padEnd(LABEL_WIDTH)) : " ".repeat(LABEL_WIDTH)}${l}`,
+    );
+
+  if (human === agent) return row("text", [{ text: agent }]);
+
+  const humanSegs: Segment[] = [];
+  const agentSegs: Segment[] = [];
+  for (const part of diffWordsWithSpace(human, agent)) {
+    if (part.added) {
+      // Keep surrounding whitespace outside the highlight
+      const [, lead, body, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(part.value)!;
+      agentSegs.push({ text: lead }, { text: body, style: hl }, { text: trail });
+    } else if (part.removed) humanSegs.push({ text: part.value, style: lo });
+    else {
+      humanSegs.push({ text: part.value });
+      agentSegs.push({ text: part.value });
+    }
+  }
+  return [
+    ...(human ? row("you see", humanSegs) : row("you see", [{ text: "(nothing)", style: pc.dim }])),
+    ...row("AI reads", agentSegs),
+  ];
 }
 
 // ─── Findings ────────────────────────────────────────────────────────
@@ -88,21 +144,24 @@ function formatDiffBlock(finding: Finding): string {
 function severityLabel(severity: Severity): string {
   switch (severity) {
     case "critical":
-      return pc.red(pc.bold("CRITICAL"));
+      return pc.red(pc.bold("CRITICAL".padEnd(INDENT.length - 2)));
     case "warning":
-      return pc.yellow(pc.bold("WARNING"));
+      return pc.yellow(pc.bold("WARNING".padEnd(INDENT.length - 2)));
     case "info":
-      return pc.dim("INFO");
+      return pc.dim("INFO".padEnd(INDENT.length - 2));
   }
 }
 
-function formatFinding(finding: Finding, isFirst: boolean): string {
-  const prefix = isFirst ? `${pc.dim("└─")} ` : "   ";
-  const where = finding.line ? `:${finding.line}` : finding.location ? ` ${visualize(finding.location)}` : "";
+function formatFinding(finding: Finding): string {
+  const where = finding.line ? `line ${finding.line}` : finding.location ? visualize(finding.location) : "";
+  const headline = visualize(finding.technique ?? finding.message);
   const lines = [
-    `${prefix}${severityLabel(finding.severity)}${pc.dim(where)} ${visualize(finding.message)} ${pc.dim(`[${finding.ruleId}]`)}`,
+    `  ${severityLabel(finding.severity)}${where ? `${pc.dim(where)} ${pc.dim("·")} ` : ""}${headline}  ${pc.dim(finding.ruleId)}`,
+    ...formatViews(finding),
   ];
-  if (finding.humanView || finding.agentView) lines.push(formatDiffBlock(finding));
+  if (finding.trigger) {
+    lines.push(`${INDENT}${pc.yellow("⚠")} ${pc.dim("instructs the AI:")} "${visualize(finding.trigger)}"`);
+  }
   return lines.join("\n");
 }
 
@@ -122,30 +181,23 @@ function formatSource(result: ScanResult, opts: FormatOptions): string {
     (a, b) => RANK[b.severity] - RANK[a.severity] || (a.line ?? 0) - (b.line ?? 0),
   );
   const marker = result.clean ? pc.dim("○") : pc.red("●");
-  const lines = [
-    `${marker} ${pc.bold(displayPath(result.source, opts.cwd))} ${pc.dim("—")} ${counts(result.findings, true)}`,
-  ];
-  for (const [i, f] of shown.entries()) lines.push(formatFinding(f, i === 0));
-  return lines.join("\n");
+  const header = `${marker} ${pc.bold(displayPath(result.source, opts.cwd))}  ${counts(result.findings, true)}`;
+  return [header, ...shown.map(formatFinding)].join("\n\n");
 }
 
 // ─── Public API ──────────────────────────────────────────────────────
 
+/** Totals line; with many affected files, a compact per-file recap after the details. */
 export function formatSummary(results: ScanResult[], opts: FormatOptions = {}): string {
   const all = results.flatMap((r) => r.findings);
   const dirty = results.filter((r) => !r.clean);
   const lines = [
-    `${pc.bold(`${dirty.length}/${results.length}`)} file${dirty.length !== 1 ? "s" : ""} with findings ${pc.dim("(")}${counts(all, true)}${pc.dim(")")}`,
+    `${pc.bold(`${dirty.length} of ${results.length}`)} file${results.length !== 1 ? "s" : ""} with findings  ${counts(all, true)}`,
   ];
-  if (!dirty.length) return lines.join("\n");
-  const paths = dirty.map((r) => displayPath(r.source, opts.cwd));
-  const pad = Math.min(Math.max(...paths.map((p) => p.length)) + 2, 60);
-  dirty.forEach((r, i) => {
-    const n = r.findings.length;
-    lines.push(
-      `${pc.red("●")} ${paths[i].padEnd(pad)} ${n} finding${n !== 1 ? "s" : ""} (${counts(r.findings, false)})`,
-    );
-  });
+  if (dirty.length >= 4) {
+    for (const r of dirty)
+      lines.push(`  ${pc.red("●")} ${displayPath(r.source, opts.cwd)}  ${pc.dim(counts(r.findings, false))}`);
+  }
   return lines.join("\n");
 }
 
@@ -189,10 +241,7 @@ export function formatFindings(
     const where = results.length === 1 ? "" : ` in ${results.length} files`;
     return `${pc.green("✓")} No hidden content detected${where}.${infoNote}`;
   }
-  if (results.length === 1) return formatSource(results[0], opts) + (infoNote ? `\n${infoNote.trim()}` : "");
-
-  const lines: string[] = [];
-  for (const r of withOutput) lines.push(formatSource(r, opts), "");
-  lines.push(formatSummary(results, opts) + infoNote);
-  return lines.join("\n");
+  const blocks = withOutput.map((r) => formatSource(r, opts));
+  if (results.length === 1) return [...blocks, infoNote.trim()].filter(Boolean).join("\n\n");
+  return [...blocks, formatSummary(results, opts) + infoNote].join("\n\n");
 }

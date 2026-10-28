@@ -66,6 +66,8 @@ export function concealedFinding(input: ConcealedInput): Finding {
     message: `${input.technique}: "${preview}"${why}`,
     hiddenText: hidden,
     intent: intent.level,
+    technique: input.technique,
+    trigger: intent.match,
     humanView: input.humanView ?? "",
     agentView: input.agentView ?? hidden,
     detail: input.detail,

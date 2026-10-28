@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { analyzeClipboardHTML } from "../../core/clipboard.js";
 import { DEFAULT_CONFIG, MAX_FILE_SIZE } from "../../core/constants/index.js";
 import { detectKind, scanBytes, scanText } from "../../core/pipeline.js";
@@ -58,7 +58,7 @@ export async function scanFile(
       agentView: "",
     });
   }
-  return result(file.path, findings);
+  return result(file.display ?? file.path, findings);
 }
 
 export async function scanCommand(target: string | undefined, options: ScanOptions): Promise<void> {
@@ -111,7 +111,12 @@ export async function scanCommand(target: string | undefined, options: ScanOptio
         process.exit(2);
       }
       if (st.isFile()) {
-        results.push(await scanFile({ path: targetPath, rel: basename(targetPath) }, scanOpts));
+        results.push(
+          await scanFile(
+            { path: targetPath, rel: basename(targetPath), display: target ?? targetPath },
+            scanOpts,
+          ),
+        );
       } else {
         let files = await walkDirectory(targetPath, config.ignore ?? []);
         if (options.recursive === false) files = files.filter((f) => !f.rel.includes("/"));
@@ -121,7 +126,10 @@ export async function scanCommand(target: string | undefined, options: ScanOptio
         }
         if (format === "pretty")
           console.error(`Scanning ${files.length} file${files.length === 1 ? "" : "s"}…`);
-        for (const file of files) results.push(await scanFile(file, scanOpts));
+        // Show paths the way the user named the target ("docs/x.md", not an absolute path)
+        const shown = (rel: string) => (target && target !== "." ? join(target, rel) : rel);
+        for (const file of files)
+          results.push(await scanFile({ ...file, display: shown(file.rel) }, scanOpts));
       }
     }
 
