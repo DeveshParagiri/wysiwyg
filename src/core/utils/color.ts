@@ -1,17 +1,5 @@
 import { LOW_CONTRAST_THRESHOLD, NEAR_WHITE_THRESHOLD } from "../constants/index.js";
-
-/** Named color map (subset commonly used for hiding text) */
-const NAMED_COLORS: Record<string, [number, number, number]> = {
-  white: [255, 255, 255],
-  black: [0, 0, 0],
-  transparent: [0, 0, 0], // alpha=0, but we track that separately
-  red: [255, 0, 0],
-  green: [0, 128, 0],
-  blue: [0, 0, 255],
-  yellow: [255, 255, 0],
-  gray: [128, 128, 128],
-  grey: [128, 128, 128],
-};
+import { NAMED_COLORS } from "./named-colors.js";
 
 export interface RGBA {
   r: number;
@@ -20,112 +8,120 @@ export interface RGBA {
   a: number;
 }
 
-/**
- * Parse a CSS color value into RGBA components.
- * Handles hex (#fff, #ffffff), rgb(), rgba(), and named colors.
- */
-export function parseColor(value: string): RGBA | null {
-  const trimmed = value.trim().toLowerCase();
+function hexToRgba(hex: string): RGBA | null {
+  const h = hex.replace(/^#/, "");
+  if (!/^[0-9a-f]+$/i.test(h)) return null;
+  const full =
+    h.length === 3 || h.length === 4
+      ? h
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : h;
+  if (full.length !== 6 && full.length !== 8) return null;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16),
+    a: full.length === 8 ? parseInt(full.slice(6, 8), 16) / 255 : 1,
+  };
+}
 
-  // Named colors
-  if (trimmed === "transparent") {
-    return { r: 0, g: 0, b: 0, a: 0 };
-  }
-  const named = NAMED_COLORS[trimmed];
-  if (named) {
-    return { r: named[0], g: named[1], b: named[2], a: 1 };
-  }
+function parseComponent(v: string, max: number): number {
+  return v.endsWith("%") ? (parseFloat(v) / 100) * max : parseFloat(v);
+}
 
-  // Hex: #fff or #ffffff
-  const hex3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(trimmed);
-  if (hex3) {
-    return {
-      r: parseInt(hex3[1] + hex3[1], 16),
-      g: parseInt(hex3[2] + hex3[2], 16),
-      b: parseInt(hex3[3] + hex3[3], 16),
-      a: 1,
-    };
-  }
+function parseAlpha(v: string | undefined): number {
+  if (v === undefined) return 1;
+  return v.endsWith("%") ? parseFloat(v) / 100 : parseFloat(v);
+}
 
-  const hex6 = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(trimmed);
-  if (hex6) {
-    return {
-      r: parseInt(hex6[1], 16),
-      g: parseInt(hex6[2], 16),
-      b: parseInt(hex6[3], 16),
-      a: 1,
-    };
-  }
-
-  // rgb(r, g, b) or rgba(r, g, b, a)
-  const rgbMatch =
-    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([\d.]+))?\s*\)$/i.exec(
-      trimmed,
-    );
-  if (rgbMatch) {
-    const r = parseInt(rgbMatch[1], 10);
-    const g = parseInt(rgbMatch[2], 10);
-    const b = parseInt(rgbMatch[3], 10);
-    if (r > 255 || g > 255 || b > 255) return null;
-    const a = rgbMatch[4] !== undefined ? parseFloat(rgbMatch[4]) : 1;
-    if (a < 0 || a > 1) return null;
-    return { r, g, b, a };
-  }
-
-  return null;
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
 }
 
 /**
- * Calculate relative luminance of a color (0-1 scale).
- * Based on WCAG 2.0 formula.
+ * Parse a CSS color into RGBA. Handles hex (3/4/6/8 digits), rgb()/rgba() and
+ * hsl()/hsla() in both comma and space syntax, the 148 named colors, and
+ * `transparent`. Returns null for anything else (var(), currentColor, …).
  */
+export function parseColor(value: string): RGBA | null {
+  const v = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s*!important$/, "");
+  if (v === "transparent") return { r: 0, g: 0, b: 0, a: 0 };
+  if (v.startsWith("#")) return hexToRgba(v);
+  if (NAMED_COLORS[v]) return hexToRgba(NAMED_COLORS[v]);
+
+  const fn = /^(rgba?|hsla?)\(\s*([^)]*)\)$/.exec(v);
+  if (!fn) return null;
+  const parts = fn[2].split(/[\s,/]+/).filter(Boolean);
+  if (parts.length < 3) return null;
+
+  if (fn[1].startsWith("rgb")) {
+    const [r, g, b] = parts.slice(0, 3).map((p) => parseComponent(p, 255));
+    const a = parseAlpha(parts[3]);
+    if ([r, g, b, a].some((n) => Number.isNaN(n))) return null;
+    if (r > 255 || g > 255 || b > 255 || a < 0 || a > 1) return null;
+    return { r: Math.round(r), g: Math.round(g), b: Math.round(b), a };
+  }
+  const h = parseFloat(parts[0]);
+  const s = parseFloat(parts[1]) / 100;
+  const l = parseFloat(parts[2]) / 100;
+  const a = parseAlpha(parts[3]);
+  if ([h, s, l, a].some((n) => Number.isNaN(n))) return null;
+  const [r, g, b] = hslToRgb(((h % 360) + 360) % 360, s, l);
+  return { r, g, b, a };
+}
+
+/** Relative luminance (WCAG 2.x), 0–1. */
 export function luminance(color: RGBA): number {
   const srgb = [color.r / 255, color.g / 255, color.b / 255];
-  const linear = srgb.map((c) =>
-    c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4),
-  );
+  const linear = srgb.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
   return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
 }
 
-/**
- * Check if two colors are too similar to distinguish (hidden text).
- * Returns true if the colors have very low contrast ratio.
- */
+/** Composite a (possibly translucent) foreground over an opaque background. */
+export function blend(fg: RGBA, bg: RGBA): RGBA {
+  return {
+    r: Math.round(fg.r * fg.a + bg.r * (1 - fg.a)),
+    g: Math.round(fg.g * fg.a + bg.g * (1 - fg.a)),
+    b: Math.round(fg.b * fg.a + bg.b * (1 - fg.a)),
+    a: 1,
+  };
+}
+
+export function contrastRatio(fg: RGBA, bg: RGBA): number {
+  const a = luminance(blend(fg, bg));
+  const b = luminance(bg);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/** True if the two colors are too close to tell apart. */
 export function isLowContrast(fg: RGBA, bg: RGBA): boolean {
-  const fgLum = luminance(fg);
-  const bgLum = luminance(bg);
-  const lighter = Math.max(fgLum, bgLum);
-  const darker = Math.min(fgLum, bgLum);
-  const ratio = (lighter + 0.05) / (darker + 0.05);
-  // WCAG AA requires 4.5:1 for normal text; we flag below our threshold as hidden
-  return ratio < LOW_CONTRAST_THRESHOLD;
+  return contrastRatio(fg, bg) < LOW_CONTRAST_THRESHOLD;
 }
 
 /**
- * Check if a color value indicates hidden text.
- * Simple heuristic: white/near-white text or transparent text is likely hidden.
+ * Check if a text color is effectively invisible. With a background, compares
+ * contrast; without one, assumes a white page.
  */
-export function isColorHidden(
-  color: string,
-  bgColor?: string,
-): boolean {
+export function isColorHidden(color: string, bgColor?: string): boolean {
   const fg = parseColor(color);
   if (!fg) return false;
-
-  // Fully transparent = hidden
-  if (fg.a === 0) return true;
-
-  // If we have a background color, check contrast
-  if (bgColor) {
-    const bg = parseColor(bgColor);
-    if (bg) {
-      return isLowContrast(fg, bg);
-    }
-  }
-
-  // Without background context, flag white/near-white text
-  // (assumes white background as default)
-  if (fg.r >= NEAR_WHITE_THRESHOLD && fg.g >= NEAR_WHITE_THRESHOLD && fg.b >= NEAR_WHITE_THRESHOLD) return true;
-
-  return false;
+  if (fg.a <= 0.05) return true;
+  const bg = (bgColor && parseColor(bgColor)) || { r: 255, g: 255, b: 255, a: 1 };
+  if (bgColor && bg.a === 0) return isColorHidden(color);
+  if (
+    !bgColor &&
+    fg.r >= NEAR_WHITE_THRESHOLD &&
+    fg.g >= NEAR_WHITE_THRESHOLD &&
+    fg.b >= NEAR_WHITE_THRESHOLD
+  )
+    return true;
+  return isLowContrast(fg, { ...bg, a: 1 });
 }
