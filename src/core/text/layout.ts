@@ -8,8 +8,19 @@ import { LineIndex } from "./lines.js";
  * instruction on the same line, or a payload after a long run of blank lines.
  */
 
-const H_PADDING = /[ \t  - 　]{100,}(?=\S)/g;
+/** Whitespace run that pushes the rest of a line past this many display columns. */
+const MIN_PADDING_COLUMNS = 100;
+const WHITESPACE_RUN = /[ \t\u00a0\u2000-\u200a\u3000]+(?=\S)/g;
 const MIN_BLANK_LINES = 60;
+const TAB_WIDTH = 8;
+
+/** Display columns a whitespace run occupies starting at `startCol` (tabs advance to the next stop). */
+function columnsOf(run: string, startCol: number): number {
+  let col = startCol;
+  for (const ch of run)
+    col = ch === "\t" ? (Math.floor(col / TAB_WIDTH) + 1) * TAB_WIDTH : col + (ch === "\u3000" ? 2 : 1);
+  return col - startCol;
+}
 
 export function scanLayout(content: string, opts: { instructionFile?: boolean } = {}): Finding[] {
   const findings: Finding[] = [];
@@ -17,26 +28,34 @@ export function scanLayout(content: string, opts: { instructionFile?: boolean } 
 
   for (let n = 1; n <= idx.lines.length; n++) {
     const text = idx.line(n);
-    if (text.length < 100) continue;
-    H_PADDING.lastIndex = 0;
-    const m = H_PADDING.exec(text);
-    if (!m) continue;
-    const before = text.slice(0, m.index);
-    const after = text.slice(m.index + m[0].length);
-    findings.push(
-      concealedFinding({
-        ruleId: "layout/horizontal-padding",
-        type: "layout",
-        concealment: "hidden",
-        technique: `Text pushed off-screen by ${m[0].length} whitespace characters`,
-        hiddenText: after,
-        line: n,
-        column: m.index + m[0].length + 1,
-        humanView: before,
-        agentView: `${before} ⟨${m[0].length} spaces⟩ ${after}`,
-        instructionFile: opts.instructionFile,
-      }),
-    );
+    if (text.length < 13) continue; // 12 tabs is the shortest run that can reach 100 columns
+    let col = 0; // display column of `pos`, advanced incrementally (linear in line length)
+    let pos = 0;
+    for (const m of text.matchAll(WHITESPACE_RUN)) {
+      // A run of n characters spans at most n * TAB_WIDTH columns; skip short runs without measuring.
+      if (m[0].length * TAB_WIDTH < MIN_PADDING_COLUMNS) continue;
+      col += columnsOf(text.slice(pos, m.index), col);
+      pos = m.index;
+      const width = columnsOf(m[0], col);
+      if (width < MIN_PADDING_COLUMNS) continue;
+      const before = (m.index > 120 ? "…" : "") + text.slice(Math.max(0, m.index - 120), m.index);
+      const after = text.slice(m.index + m[0].length, m.index + m[0].length + 2000);
+      findings.push(
+        concealedFinding({
+          ruleId: "layout/horizontal-padding",
+          type: "layout",
+          concealment: "hidden",
+          technique: `Text pushed off-screen by ${width} columns of whitespace`,
+          hiddenText: after,
+          line: n,
+          column: m.index + m[0].length + 1,
+          humanView: before,
+          agentView: `${before} ⟨${width} columns of whitespace⟩ ${after}`,
+          instructionFile: opts.instructionFile,
+        }),
+      );
+      break;
+    }
   }
 
   // Trailing payload after a long run of blank lines

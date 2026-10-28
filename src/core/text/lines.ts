@@ -52,9 +52,10 @@ export class LineIndex {
 }
 
 /** Characters that never render visibly: format, default-ignorable, private use, controls. */
-const INVISIBLE_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Co}⠀ㅤﾠᅟᅠ]/u;
-// eslint-disable-next-line no-control-regex
-const CONTROL_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]/;
+const INVISIBLE_CLASS = "\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Co}\\u2800\\u3164\\uffa0\\u115f\\u1160";
+const CONTROL_CLASS = "\\x00-\\x08\\x0b-\\x1f\\x7f\\x80-\\x9f"; // all C0/C1 controls except \\t and \\n
+const INVISIBLE_RE = new RegExp(`[${INVISIBLE_CLASS}]`, "u");
+const HIDDEN_GLOBAL = new RegExp(`[${CONTROL_CLASS}${INVISIBLE_CLASS}]`, "gu");
 
 export function isInvisibleChar(ch: string): boolean {
   return INVISIBLE_RE.test(ch);
@@ -66,23 +67,12 @@ export function isInvisibleChar(ch: string): boolean {
  * reach the terminal raw — an ANSI payload could rewrite the report itself.
  */
 export function visualize(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    if (ch === "\n" || ch === "\t") out += ch;
-    else if (CONTROL_RE.test(ch) || INVISIBLE_RE.test(ch)) out += codepointLabel(ch.codePointAt(0)!);
-    else out += ch;
-  }
-  return out;
+  return s.replace(HIDDEN_GLOBAL, (ch) => codepointLabel(ch.codePointAt(0)!));
 }
 
 /** Remove invisible and control characters: roughly what a human sees. */
 export function stripInvisible(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    if (ch === "\n" || ch === "\t") out += ch;
-    else if (!CONTROL_RE.test(ch) && !INVISIBLE_RE.test(ch)) out += ch;
-  }
-  return out;
+  return s.replace(HIDDEN_GLOBAL, "");
 }
 
 export function codepointLabel(cp: number): string {

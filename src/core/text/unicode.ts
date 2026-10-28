@@ -160,19 +160,26 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
   const hasRTL = RTL.test(content);
   const findings: Finding[] = [];
 
-  const views = (run: Run, replacement: string) => {
+  // Context is sliced straight from the content (never the whole line): a single
+  // multi-megabyte line with many runs must stay linear.
+  // Views are only built for findings that will be displayed (MAX_PER_RULE per rule);
+  // the rest are summarised by capPerRule, which needs just the line.
+  const shown = new Map<string, number>();
+  const views = (run: Run, replacement: string, ruleId: string) => {
     const line = idx.lineOf(run.start);
     const lineStart = run.start - (idx.columnOf(run.start) - 1);
-    const text = idx.line(line);
-    const a = run.start - lineStart;
-    const b = run.end - lineStart;
-    const lo = Math.max(0, a - 80);
-    const hi = Math.min(text.length, b + 80);
-    const pre = (lo > 0 ? "…" : "") + text.slice(lo, a);
-    const post = text.slice(b, hi) + (hi < text.length ? "…" : "");
+    const count = (shown.get(ruleId) ?? 0) + 1;
+    shown.set(ruleId, count);
+    if (count > MAX_PER_RULE)
+      return { line, column: run.start - lineStart + 1, humanView: "", agentView: "" };
+    const lo = Math.max(lineStart, run.start - 80);
+    const tail = content.slice(run.end, run.end + 81);
+    const cut = tail.search(/\r?\n/);
+    const post = cut === -1 ? (tail.length > 80 ? `${tail.slice(0, 80)}…` : tail) : tail.slice(0, cut);
+    const pre = (lo > lineStart ? "…" : "") + content.slice(lo, run.start);
     return {
       line,
-      column: a + 1,
+      column: run.start - lineStart + 1,
       humanView: stripInvisible(pre + post),
       agentView: visualize(pre) + replacement + visualize(post),
     };
@@ -195,7 +202,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
     const tags = cps.filter(isTag);
     if (tags.length) {
       const decoded = decodeUnicodeTags(String.fromCodePoint(...tags));
-      const v = views(run, `⟦${decoded}⟧`);
+      const v = views(run, `⟦${decoded}⟧`, "unicode/tags");
       if (decoded.trim()) {
         findings.push(
           concealedFinding({
@@ -227,7 +234,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
             technique: `${vs.length} variation selectors after "${run.prev}" encode hidden bytes`,
             hiddenText: decoded,
             offset: run.start,
-            ...views(run, `⟦${decoded}⟧`),
+            ...views(run, `⟦${decoded}⟧`, "unicode/variation-selector-smuggling"),
             detail: "VS1–VS16 → 0–15, VS17–VS256 → 16–255 (UTF-8)",
           }),
         );
@@ -248,7 +255,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
           technique: `${rest.length} invisible characters encode text as binary`,
           hiddenText: binary,
           offset: run.start,
-          ...views(run, `⟦${binary}⟧`),
+          ...views(run, `⟦${binary}⟧`, "unicode/invisible-binary"),
           detail: `symbols: ${syms}`,
         }),
       );
@@ -304,6 +311,12 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
       } else if (isBidiMark(cp) || isBidiIsolate(cp)) {
         if (hasRTL) continue;
         raise("warning", "unicode/bidi", "bidi_override", cp);
+      } else if (cp === 0x202c) {
+        // POP DIRECTIONAL FORMATTING closes an embedding and reorders nothing itself. When it
+        // closes an opener on the same line it is part of that finding; a stray one is info.
+        const lineStart = content.lastIndexOf("\n", run.start) + 1;
+        if (/[\u202a\u202b\u202d\u202e]/.test(content.slice(lineStart, run.start))) continue;
+        raise("info", "unicode/bidi", "bidi_override", cp);
       } else if (isBidiEmbed(cp)) {
         // Critical only when the reordered span (up to POP DIRECTIONAL FORMATTING or end of line)
         // contains letters or digits — otherwise nothing a reader relies on changes on screen.
@@ -344,6 +357,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
       unique.length
         ? visualize(String.fromCodePoint(...flagged.slice(0, 12))) + (flagged.length > 12 ? "…" : "")
         : "",
+      ruleId,
     );
     findings.push({
       ruleId,

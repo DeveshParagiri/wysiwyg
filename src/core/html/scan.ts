@@ -4,6 +4,7 @@ import type { AnyNode, Element } from "domhandler";
 import { LOW_CONTRAST_THRESHOLD } from "../constants/index.js";
 import { concealedFinding } from "../policy.js";
 import { LineIndex } from "../text/lines.js";
+import { capPerRule } from "../text/unicode.js";
 import type { Concealment, Finding } from "../types.js";
 import { contrastRatio, parseColor, type RGBA } from "../utils/color.js";
 import { computeDeclaredStyles, type StyleMap, toPx } from "./style.js";
@@ -172,13 +173,6 @@ function hidingTechnique(
   return null;
 }
 
-export interface HtmlProjection {
-  /** Text a human perceives. */
-  human: string;
-  /** All text an agent ingests (including hidden text and channels). */
-  agent: string;
-}
-
 export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
   const prefix = opts.rulePrefix ?? (opts.xml ? "svg" : "html");
   const $: CheerioAPI = opts.xml
@@ -215,19 +209,13 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     parts: string[];
   }
   const groups = new Map<Element, HiddenGroup>();
-  const visibleParts: string[] = [];
-  const allParts: string[] = [];
 
   const walk = (node: AnyNode, state: State) => {
     if (node.type === "text") {
       const text = (node as unknown as { data: string }).data;
       if (!text.trim()) return;
-      allParts.push(text);
       const reason = textHidden(state);
-      if (!reason) {
-        visibleParts.push(text);
-        return;
-      }
+      if (!reason) return;
       const g = groups.get(reason.el) ?? {
         root: reason.el,
         technique: reason.technique,
@@ -269,9 +257,11 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     }
     const fo = num(s.get("fill-opacity"));
     if (fo !== null && next.svg) next.color = { ...next.color, a: next.color.a * fo };
-    if (s.get("background-image") && !/^none$/i.test(s.get("background-image")!)) next.background = null;
+    const bgImage = s.get("background-image");
+    const hasImage = Boolean(bgImage && !/^none$/i.test(bgImage));
+    if (hasImage) next.background = null; // contrast against an image is unknown
     const bgc = s.get("background-color");
-    if (bgc) {
+    if (bgc && !hasImage) {
       const c = parseColor(bgc);
       if (c && c.a > 0.5) next.background = { ...c, a: 1 };
     }
@@ -335,9 +325,6 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
   };
   walk($.root()[0] as AnyNode, rootState);
 
-  // Merge groups whose root is nested in another group's root (same hiding cause)
-  const human = visibleParts.join(" ").replace(/\s+/g, " ").trim();
-
   for (const g of groups.values()) {
     const hiddenText = g.parts.join(" ").replace(/\s+/g, " ").trim();
     if (!hiddenText) continue;
@@ -349,7 +336,7 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
       : g.toggleable && scripted
         ? `Hidden until revealed by script (${g.technique})`
         : `Hidden text (${g.technique}${describeEl(g.root)})`;
-    const context = blockContext($, g.root, groups);
+    const context = blockContext(g.root, groups);
     findings.push(
       concealedFinding({
         ruleId: `${prefix}/hidden-text`,
@@ -444,8 +431,7 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     if (opts.xml) channel("svg-metadata", "<title> (tooltip only)", $(el).text(), el);
   });
 
-  void human;
-  return findings;
+  return capPerRule(findings);
 }
 
 function describeEl(el: Element): string {
@@ -457,26 +443,44 @@ function describeEl(el: Element): string {
 }
 
 /** Visible vs full text of the nearest block ancestor, for the H/A diff. */
-function blockContext(
-  $: CheerioAPI,
-  root: Element,
-  groups: Map<Element, unknown>,
-): { human: string; agent: string } {
-  let block: Element | null = root.parent as Element | null;
-  while (block && block.type === "tag" && !BLOCK.has(block.tagName?.toLowerCase()))
-    block = block.parent as Element | null;
-  const base = block && block.type === "tag" ? block : root;
-  const text = (node: AnyNode, skipHidden: boolean): string => {
-    if (node.type === "text") return (node as unknown as { data: string }).data;
-    if (node.type !== "tag" && node.type !== "root") return "";
+/**
+ * Human vs agent text around a hidden element: its own text plus neighbouring
+ * siblings (≈160 characters each side). Bounded, so pages with thousands of
+ * hidden elements stay linear, and always centred on the hidden content.
+ */
+function blockContext(root: Element, groups: Map<Element, unknown>): { human: string; agent: string } {
+  const WINDOW = 160;
+  const text = (node: AnyNode, skipHidden: boolean, budget: number): string => {
+    if (node.type === "text") return (node as unknown as { data: string }).data.slice(0, budget);
+    if (node.type !== "tag") return "";
     const el = node as Element;
     if (CODE.has(el.tagName?.toLowerCase())) return "";
     if (skipHidden && groups.has(el)) return " ";
-    return (el.children ?? []).map((c) => text(c, skipHidden)).join("");
+    let out = "";
+    for (const child of el.children ?? []) {
+      if (out.length >= budget) break;
+      out += text(child, skipHidden, budget - out.length);
+    }
+    return out;
+  };
+  const side = (dir: "prev" | "next", skipHidden: boolean) => {
+    const parts: string[] = [];
+    let len = 0;
+    for (
+      let n = dir === "prev" ? root.prev : root.next;
+      n && len < WINDOW;
+      n = dir === "prev" ? n.prev : n.next
+    ) {
+      const t = text(n, skipHidden, WINDOW - len);
+      parts.push(t);
+      len += t.length;
+    }
+    return dir === "prev" ? parts.reverse().join("") : parts.join("");
   };
   const norm = (s: string) => s.replace(/\s+/g, " ").trim();
-  void $;
-  return { human: clip(norm(text(base, true))), agent: clip(norm(text(base, false))) };
+  const human = norm(`${side("prev", true)} ${side("next", true)}`);
+  const agent = norm(`${side("prev", false)} ${text(root, false, 2000)} ${side("next", false)}`);
+  return { human: clip(human, 400), agent: clip(agent, 400) };
 }
 
 function clip(s: string, max = 240): string {
