@@ -52,8 +52,8 @@ export class LineIndex {
   findText(text: string, minLength = 6): number | undefined {
     const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 8);
     if (words.join(" ").length < minLength) return undefined;
-    const escape = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const m = new RegExp(words.map(escape).join("(?:\\s|[*_`~>])+")).exec(this.content);
+    const escapeRegExp = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = new RegExp(words.map(escapeRegExp).join("(?:\\s|[*_`~>])+")).exec(this.content);
     return m ? this.lineOf(m.index) : undefined;
   }
 
