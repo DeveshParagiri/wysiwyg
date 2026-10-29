@@ -4,10 +4,13 @@
   "description": "Find what AI agents read but humans can't see: hidden prompt injection in files, web pages, PDFs, Office docs and MCP servers.",
   "type": "module",
   "bin": {
-    "wysiwyg": "./dist/cli.js"
+    "wysiwyg": "dist/cli.js"
   },
   "files": [
-    "dist/",
+    "dist/cli.js",
+    "dist/index.js",
+    "dist/scan-worker.js",
+    "dist/types/",
     "README.md",
     "LICENSE"
   ],
@@ -33,7 +36,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/DeveshParagiri/wysiwyg.git"
+    "url": "git+https://github.com/DeveshParagiri/wysiwyg.git"
   },
   "author": "Devesh Paragiri",
   "license": "MIT",
