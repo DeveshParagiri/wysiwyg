@@ -10,7 +10,9 @@
  */
 import { chmodSync, rmSync } from "node:fs";
 
-rmSync("dist", { recursive: true, force: true });
+// Overwrite in place rather than deleting dist/: `npm publish` checks the bin
+// target while prepublishOnly runs, and drops it if dist/cli.js is briefly missing.
+rmSync("dist/types", { recursive: true, force: true });
 
 const common = {
   target: "node",
