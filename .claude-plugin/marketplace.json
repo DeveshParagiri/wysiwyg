@@ -1,0 +1,14 @@
+{
+  "name": "wysiwyg",
+  "owner": { "name": "Devesh Paragiri", "url": "https://github.com/DeveshParagiri" },
+  "description": "wysiwyg: find what AI agents read but humans can't see.",
+  "plugins": [
+    {
+      "name": "wysiwyg",
+      "source": "./plugin",
+      "description": "Flags hidden prompt injection in tool results and in the skills, rules and CLAUDE.md files a session loads.",
+      "category": "security",
+      "tags": ["security", "prompt-injection", "hidden-text"]
+    }
+  ]
+}

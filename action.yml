@@ -1,0 +1,75 @@
+name: "wysiwyg — hidden prompt injection scan"
+description: "Find content AI agents read but humans can't see: invisible Unicode, CSS-hidden text, hidden PDF/Office text, poisoned skills and rules."
+author: "Devesh Paragiri"
+branding:
+  icon: "eye-off"
+  color: "red"
+
+inputs:
+  paths:
+    description: "Files or directories to scan (space-separated)."
+    default: "."
+  diff:
+    description: >-
+      Only scan files changed relative to this git ref. "auto" (default) uses the pull
+      request's base branch on pull_request events and scans everything otherwise.
+      Requires actions/checkout with fetch-depth: 0. Set to "" to always scan everything.
+    default: "auto"
+  fail-on:
+    description: "Fail the step at or above this severity: critical, warning or info."
+    default: "critical"
+  sarif:
+    description: "Upload findings to GitHub code scanning (needs security-events: write)."
+    default: "true"
+  args:
+    description: "Extra arguments passed to wysiwyg scan (e.g. --no-config)."
+    default: ""
+
+outputs:
+  exit-code:
+    description: "0 = clean, 1 = findings at or above fail-on, 2 = error."
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        WYSIWYG: ${{ github.action_path }}/plugin/dist/wysiwyg.mjs
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_SARIF: ${{ inputs.sarif }}
+        INPUT_ARGS: ${{ inputs.args }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        set +e
+        diff_args=()
+        if [ "$INPUT_DIFF" = "auto" ]; then
+          if [ -n "$BASE_REF" ]; then diff_args=(--diff "origin/$BASE_REF"); fi
+        elif [ -n "$INPUT_DIFF" ]; then
+          diff_args=(--diff "$INPUT_DIFF")
+        fi
+        read -r -a paths <<< "$INPUT_PATHS"
+        read -r -a extra <<< "$INPUT_ARGS"
+
+        # Human-readable report in the log; the exit code decides the step
+        node "$WYSIWYG" scan "${paths[@]}" "${diff_args[@]}" --fail-on "$INPUT_FAIL_ON" "${extra[@]}"
+        code=$?
+        if [ "$INPUT_SARIF" = "true" ]; then
+          node "$WYSIWYG" scan "${paths[@]}" "${diff_args[@]}" --format sarif "${extra[@]}" > "$RUNNER_TEMP/wysiwyg.sarif"
+        fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ always() && inputs.sarif == 'true' && steps.scan.outputs.exit-code != '2' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/wysiwyg.sarif
+        category: wysiwyg
+
+    - if: ${{ steps.scan.outputs.exit-code != '0' }}
+      shell: bash
+      run: |
+        echo "wysiwyg exited with ${{ steps.scan.outputs.exit-code }} (1 = findings at or above ${{ inputs.fail-on }}, 2 = error)"
+        exit ${{ steps.scan.outputs.exit-code }}

@@ -4,20 +4,76 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-
-      - run: bun install
-
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
       - run: bun run typecheck
-
       - run: bun test
+      - name: Red-team score
+        run: bun run redteam
+
+  package:
+    name: npm package on Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Install the packed tarball and run it with Node only
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP"/wysiwyg-shield-*.tgz
+          npx wysiwyg --version
+          printf 'ok\xf3\xa0\x81\xa9\xf3\xa0\x81\xa7\xf3\xa0\x81\xae\n' > tagged.md
+          set +e; npx wysiwyg tagged.md; code=$?; set -e
+          test "$code" = 1
+          node --input-type=module -e "import { scanText } from 'wysiwyg-shield'; if (!scanText('a\u{E0069}\u{E0067}', { path: 'x.md' }).length) process.exit(1)"
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Committed plugin bundle is up to date
+        run: |
+          bun run build:plugin
+          git diff --exit-code --stat plugin/dist || (echo "Run 'bun run build:plugin' and commit plugin/dist" && exit 1)
+
+  self-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          paths: src scripts plugin
+          diff: ""

@@ -1,5 +1,12 @@
-import { describe, test, expect } from "bun:test";
-import { parseColor, isColorHidden, luminance, isLowContrast } from "../../src/core/utils/color.js";
+import { describe, expect, test } from "bun:test";
+import {
+  blend,
+  contrastRatio,
+  isColorHidden,
+  isLowContrast,
+  luminance,
+  parseColor,
+} from "../../src/core/utils/color.js";
 
 describe("parseColor", () => {
   test("parses 3-digit hex", () => {
@@ -105,5 +112,94 @@ describe("isColorHidden", () => {
   test("red text is not hidden", () => {
     expect(isColorHidden("red")).toBe(false);
     expect(isColorHidden("#ff0000")).toBe(false);
+  });
+});
+
+describe("parseColor: modern syntax", () => {
+  test("4- and 8-digit hex carry alpha", () => {
+    expect(parseColor("#fff0")).toEqual({ r: 255, g: 255, b: 255, a: 0 });
+    expect(parseColor("#00000080")?.a).toBeCloseTo(0.5, 2);
+  });
+
+  test("rejects malformed hex", () => {
+    expect(parseColor("#ff")).toBeNull();
+    expect(parseColor("#ggg")).toBeNull();
+    expect(parseColor("#12345")).toBeNull();
+  });
+
+  test("space-separated rgb() with slash alpha", () => {
+    expect(parseColor("rgb(255 255 255)")).toEqual({ r: 255, g: 255, b: 255, a: 1 });
+    expect(parseColor("rgb(0 0 0 / 50%)")).toEqual({ r: 0, g: 0, b: 0, a: 0.5 });
+    expect(parseColor("rgba(10 20 30 / 0.25)")).toEqual({ r: 10, g: 20, b: 30, a: 0.25 });
+  });
+
+  test("percentage rgb components", () => {
+    expect(parseColor("rgb(100%, 0%, 50%)")).toEqual({ r: 255, g: 0, b: 128, a: 1 });
+  });
+
+  test("hsl() in comma and space syntax", () => {
+    expect(parseColor("hsl(0, 0%, 100%)")).toEqual({ r: 255, g: 255, b: 255, a: 1 });
+    expect(parseColor("hsl(0 0% 100%)")).toEqual({ r: 255, g: 255, b: 255, a: 1 });
+    expect(parseColor("hsl(120, 100%, 50%)")).toEqual({ r: 0, g: 255, b: 0, a: 1 });
+    expect(parseColor("hsla(240 100% 50% / 0.5)")).toEqual({ r: 0, g: 0, b: 255, a: 0.5 });
+    expect(parseColor("hsl(-120, 100%, 50%)")).toEqual({ r: 0, g: 0, b: 255, a: 1 });
+  });
+
+  test("named colours are case-insensitive", () => {
+    expect(parseColor("GhostWhite")).toEqual({ r: 248, g: 248, b: 255, a: 1 });
+    expect(parseColor("rebeccapurple")).toEqual({ r: 102, g: 51, b: 153, a: 1 });
+  });
+
+  test("!important suffix is tolerated", () => {
+    expect(parseColor("#fff !important")).toEqual({ r: 255, g: 255, b: 255, a: 1 });
+  });
+
+  test("unresolvable values return null", () => {
+    expect(parseColor("currentColor")).toBeNull();
+    expect(parseColor("var(--fg)")).toBeNull();
+    expect(parseColor("inherit")).toBeNull();
+    expect(parseColor("rgb(1, 2)")).toBeNull();
+  });
+});
+
+describe("contrastRatio", () => {
+  const white = { r: 255, g: 255, b: 255, a: 1 };
+  const black = { r: 0, g: 0, b: 0, a: 1 };
+
+  test("black on white is 21:1", () => {
+    expect(contrastRatio(black, white)).toBeCloseTo(21, 0);
+  });
+
+  test("same colour is 1:1", () => {
+    expect(contrastRatio(white, white)).toBeCloseTo(1, 5);
+  });
+
+  test("translucent text is blended over the background", () => {
+    expect(contrastRatio({ ...black, a: 0 }, white)).toBeCloseTo(1, 5);
+    expect(blend({ ...black, a: 0.5 }, white)).toEqual({ r: 128, g: 128, b: 128, a: 1 });
+  });
+});
+
+describe("isColorHidden: more cases", () => {
+  test("near-white named colours are hidden on white", () => {
+    expect(isColorHidden("ghostwhite")).toBe(true);
+    expect(isColorHidden("snow")).toBe(true);
+  });
+
+  test("dark text on dark background is hidden", () => {
+    expect(isColorHidden("#121212", "#111")).toBe(true);
+  });
+
+  test("light text on dark background is visible", () => {
+    expect(isColorHidden("#ddd", "#111")).toBe(false);
+  });
+
+  test("a transparent background falls back to white", () => {
+    expect(isColorHidden("#fff", "transparent")).toBe(true);
+    expect(isColorHidden("#000", "transparent")).toBe(false);
+  });
+
+  test("unparseable colours are not hidden", () => {
+    expect(isColorHidden("var(--x)")).toBe(false);
   });
 });

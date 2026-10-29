@@ -1,39 +1,40 @@
-import { readdir, stat, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
-import { MAX_FILE_SIZE, BINARY_CHECK_BYTES } from "../../core/constants/index.js";
+import type { Dirent } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
+import { isAgentInstructionFile } from "../../core/constants/agent-files.js";
 
-/**
- * Check if a file appears to be binary by looking at the first bytes.
- */
-export function isBinary(buffer: Buffer): boolean {
-  const checkLength = Math.min(buffer.length, BINARY_CHECK_BYTES);
-  for (let i = 0; i < checkLength; i++) {
-    if (buffer[i] === 0) return true;
-  }
-  return false;
+export interface WalkedFile {
+  /** Absolute path as reached through the tree (may be a symlink). */
+  path: string;
+  /** Path relative to the scan root, "/"-separated. */
+  rel: string;
+  /** Set when the file was reached through a symlink pointing outside the scan root. */
+  outsideTarget?: string;
+  /** How to show the path in reports (defaults to `path`). */
+  display?: string;
 }
 
+/** Directories never worth descending into. */
+const NEVER_DESCEND = new Set([".git", "node_modules"]);
+
 /**
- * Check if a filename matches any of the ignore patterns (simple glob matching).
+ * Simple glob matching for ignore patterns:
+ *   "dir/**"  — the directory at any depth
+ *   "*.ext"   — extension
+ *   "**" / "*" — everything
+ *   other     — substring of the relative path
  */
-export function matchesIgnorePattern(
-  filePath: string,
-  patterns: string[],
-): boolean {
+export function matchesIgnorePattern(filePath: string, patterns: string[]): boolean {
   const normalized = filePath.replace(/\\/g, "/");
   for (const pattern of patterns) {
+    if (pattern === "**" || pattern === "*" || pattern === "**/*") return true;
     if (pattern.includes("**")) {
-      // Match directory prefix (e.g., ".git/**" should match ".git/foo" but not ".github/foo")
-      const prefix = pattern.replace("/**", "");
-      // Check for exact directory match: starts with "prefix/" or equals "prefix"
-      if (normalized === prefix || normalized.startsWith(prefix + "/")) return true;
-      // Also check for prefix appearing as a directory segment in the middle
-      if (normalized.includes("/" + prefix + "/")) return true;
+      const prefix = pattern.replace(/\/\*\*$/, "").replace(/^\*\*\//, "");
+      if (normalized === prefix || normalized.startsWith(`${prefix}/`)) return true;
+      if (normalized.includes(`/${prefix}/`) || normalized.endsWith(`/${prefix}`)) return true;
     } else if (pattern.startsWith("*.")) {
-      // Extension match
-      const ext = pattern.slice(1);
-      if (normalized.endsWith(ext)) return true;
-    } else if (normalized.includes(pattern)) {
+      if (normalized.endsWith(pattern.slice(1))) return true;
+    } else if (normalized === pattern || normalized.endsWith(`/${pattern}`) || normalized.includes(pattern)) {
       return true;
     }
   }
@@ -41,58 +42,60 @@ export function matchesIgnorePattern(
 }
 
 /**
- * Recursively walk a directory and yield file paths.
+ * Walk a directory. Follows symlinks (agents do), guards against cycles, and
+ * never lets ignore patterns hide agent instruction files.
  */
-export async function walkDirectory(
-  dir: string,
-  ignorePatterns: string[],
-  baseDir?: string,
-): Promise<string[]> {
-  const base = baseDir ?? dir;
-  const files: string[] = [];
+export async function walkDirectory(root: string, ignorePatterns: string[]): Promise<WalkedFile[]> {
+  const rootReal = await realpath(root);
+  const files: WalkedFile[] = [];
+  const visitedDirs = new Set<string>([rootReal]);
 
-  const entries = await readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = join(dir, entry.name);
-    const relativePath = relative(base, fullPath);
-
-    if (matchesIgnorePattern(relativePath, ignorePatterns)) {
-      continue;
+  const walk = async (dir: string, agentFilesOnly: boolean) => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
     }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      const rel = relative(root, full).split(sep).join("/");
+      if (NEVER_DESCEND.has(entry.name)) continue;
 
-    if (entry.isDirectory()) {
-      const subFiles = await walkDirectory(fullPath, ignorePatterns, base);
-      files.push(...subFiles);
-    } else if (entry.isFile()) {
-      files.push(fullPath);
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      let outsideTarget: string | undefined;
+      if (entry.isSymbolicLink()) {
+        try {
+          const target = await realpath(full);
+          const st = await stat(target);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+          if (target !== rootReal && !target.startsWith(rootReal + sep)) outsideTarget = target;
+        } catch {
+          continue; // dangling link
+        }
+      }
+
+      const ignored = matchesIgnorePattern(rel, ignorePatterns);
+      if (isDir) {
+        const real = await realpath(full).catch(() => full);
+        if (visitedDirs.has(real)) continue;
+        visitedDirs.add(real);
+        if (ignored || agentFilesOnly) {
+          // Agent instruction files can live anywhere (vendor/AGENTS.md, build/SKILL.md…)
+          await walk(full, true);
+          continue;
+        }
+        await walk(full, false);
+      } else if (isFile) {
+        const agentFile = isAgentInstructionFile(rel);
+        if ((ignored || agentFilesOnly) && !agentFile) continue;
+        files.push({ path: full, rel, outsideTarget });
+      }
     }
-  }
+  };
 
+  await walk(root, false);
   return files;
-}
-
-/**
- * Read a file, checking size and binary content.
- * Returns the content as a string, or null if the file should be skipped.
- */
-export async function readFileForScan(
-  filePath: string,
-): Promise<{ content: string; buffer: Buffer } | { skip: string }> {
-  const fileStat = await stat(filePath);
-
-  if (fileStat.size > MAX_FILE_SIZE) {
-    return { skip: `File too large (${(fileStat.size / 1024 / 1024).toFixed(1)}MB > ${(MAX_FILE_SIZE / 1024 / 1024).toFixed(0)}MB limit)` };
-  }
-
-  const buffer = Buffer.from(await readFile(filePath));
-
-  if (isBinary(buffer)) {
-    // Check if it's a PDF (which we can scan)
-    if (filePath.endsWith(".pdf")) {
-      return { content: "", buffer };
-    }
-    return { skip: "Binary file" };
-  }
-
-  return { content: buffer.toString("utf-8"), buffer };
 }

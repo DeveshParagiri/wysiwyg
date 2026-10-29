@@ -1,210 +1,139 @@
-import type { ScanResult, OutputFormat, Severity } from "../../core/types.js";
-import { scanUnicode } from "../../core/scanner/unicode.js";
-import { scanRendered, scanPDF } from "../../core/scanner/rendered.js";
-import { scanConfigFile, isKnownConfigFile } from "../../core/scanner/configfile.js";
-import { analyzeClipboardHTML } from "../../core/scanner/clipboard.js";
-import { FILE_TYPE_MAP, DEFAULT_CONFIG } from "../../core/constants/index.js";
-import { formatFindings, formatSummary } from "../output/formatter.js";
-import { loadConfig } from "../config/loader.js";
+import { realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { analyzeClipboardHTML } from "../../core/clipboard.js";
+import { DEFAULT_CONFIG, MAX_FILE_SIZE } from "../../core/constants/index.js";
+import { scanBytes, scanText } from "../../core/pipeline.js";
+import { isClean, meetsThreshold } from "../../core/policy.js";
+import type { Finding, OutputFormat, ScanResult, Severity } from "../../core/types.js";
+import { type LoadedConfig, loadConfig } from "../config/loader.js";
+import { formatFindings } from "../output/formatter.js";
+import { fmtCount, Progress } from "../output/progress.js";
+import { writeOut } from "../output/write.js";
 import { readClipboardHTML } from "../platform/clipboard.js";
-import {
-  walkDirectory,
-  readFileForScan,
-  matchesIgnorePattern,
-} from "../platform/fs.js";
-import { statSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { type WalkedFile, walkDirectory } from "../platform/fs.js";
+import { changedFiles } from "../platform/git.js";
+import { scanFiles } from "../platform/pool.js";
 
-interface ScanOptions {
+export interface ScanOptions {
   recursive?: boolean;
   stdin?: boolean;
   clipboard?: boolean;
   format?: string;
   failOn?: string;
-  config?: boolean; // --no-config sets this to false
+  config?: boolean | string; // --no-config → false, --config <path> → string
+  verbose?: boolean;
+  maxSize?: string;
+  diff?: string;
+  staged?: boolean;
+  as?: string;
 }
 
-/**
- * Determine if a file extension is a rendered file type.
- */
-function isRenderedFileType(filePath: string): boolean {
-  const dotIndex = filePath.lastIndexOf(".");
-  const ext = dotIndex > 0 ? filePath.slice(dotIndex).toLowerCase() : "";
-  return (
-    FILE_TYPE_MAP.markdown.includes(ext as (typeof FILE_TYPE_MAP.markdown)[number]) ||
-    FILE_TYPE_MAP.html.includes(ext as (typeof FILE_TYPE_MAP.html)[number]) ||
-    FILE_TYPE_MAP.pdf.includes(ext as (typeof FILE_TYPE_MAP.pdf)[number])
-  );
+function result(source: string, findings: Finding[]): ScanResult {
+  return { source, findings, clean: isClean(findings) };
 }
 
-function isPdfFile(filePath: string): boolean {
-  return filePath.toLowerCase().endsWith(".pdf");
+function fail(message: string): never {
+  console.error(`wysiwyg: ${message}`);
+  process.exit(2);
 }
 
-/**
- * Scan a single file and return results.
- */
-async function scanFile(filePath: string): Promise<ScanResult> {
-  const result = await readFileForScan(filePath);
-
-  if ("skip" in result) {
-    return { source: filePath, findings: [], clean: true };
+/** Expand the targets the user named into files, shown with the paths they typed. */
+async function collectFiles(
+  targets: string[],
+  ignore: string[],
+  options: ScanOptions,
+): Promise<WalkedFile[]> {
+  const files: WalkedFile[] = [];
+  for (const target of targets) {
+    const abs = resolve(target);
+    const st = statSync(abs, { throwIfNoEntry: false });
+    if (!st) fail(`cannot access "${target}"`);
+    if (st.isFile()) {
+      files.push({ path: abs, rel: basename(abs), display: target });
+      continue;
+    }
+    let found = await walkDirectory(abs, ignore);
+    if (options.recursive === false) found = found.filter((f) => !f.rel.includes("/"));
+    if (options.diff || options.staged) {
+      const changed = await changedFiles(abs, { diff: options.diff, staged: options.staged });
+      found = found.filter((f) => changed.has(realpathSync(f.path)));
+    }
+    const shown = (rel: string) => (target === "." ? rel : join(target, rel));
+    files.push(...found.map((f) => ({ ...f, display: shown(f.rel) })));
   }
-
-  const findings = [];
-
-  // Layer 1: Unicode scan — always
-  findings.push(...scanUnicode(result.content, filePath));
-
-  // Layer 2: Rendered scan — if applicable
-  if (isPdfFile(filePath)) {
-    findings.push(...(await scanPDF(result.buffer, filePath)));
-  } else if (isRenderedFileType(filePath)) {
-    findings.push(...scanRendered(result.content, filePath));
-  }
-
-  // Layer 4: Config file scan — if it's a known config file
-  if (isKnownConfigFile(filePath)) {
-    findings.push(...scanConfigFile(result.content, filePath));
-  }
-
-  return {
-    source: filePath,
-    findings,
-    clean: findings.length === 0,
-  };
+  return files;
 }
 
-/**
- * Check if severity meets threshold.
- */
-function meetsThreshold(
-  findings: ScanResult["findings"],
-  threshold: Severity,
-): boolean {
-  const severityRank: Record<Severity, number> = {
-    info: 0,
-    warning: 1,
-    critical: 2,
-  };
-  const thresholdRank = severityRank[threshold];
-  return findings.some(
-    (f) => severityRank[f.severity] >= thresholdRank,
-  );
-}
-
-/**
- * The scan command handler.
- */
 export async function scanCommand(
-  target: string | undefined,
+  targetArgs: string[] | string | undefined,
   options: ScanOptions,
 ): Promise<void> {
+  const started = performance.now();
   const format = (options.format || "pretty") as OutputFormat;
-  const useConfig = options.config !== false;
-  const config = useConfig ? loadConfig() : { ...DEFAULT_CONFIG };
+  const targets = [targetArgs ?? []].flat();
+  if (!targets.length) targets.push(".");
+  const maxBytes = options.maxSize ? Math.round(parseFloat(options.maxSize) * 1048576) : MAX_FILE_SIZE;
+
+  let loaded: Pick<LoadedConfig, "config" | "findings" | "path">;
+  try {
+    const first = resolve(targets[0]);
+    const startDir = statSync(first, { throwIfNoEntry: false })?.isDirectory() ? first : dirname(first);
+    loaded =
+      options.config === false
+        ? { config: { ...DEFAULT_CONFIG }, findings: [], path: null }
+        : loadConfig(startDir, typeof options.config === "string" ? options.config : undefined);
+  } catch (err) {
+    fail(`cannot read config: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const { config } = loaded;
   const failOn = (options.failOn || config.fail_on || "critical") as Severity;
 
   const results: ScanResult[] = [];
+  if (loaded.findings.length) results.push(result(loaded.path ?? ".wysiwygrc", loaded.findings));
 
+  const progress = new Progress();
   try {
-    // --- Stdin mode ---
     if (options.stdin) {
       const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(Buffer.from(chunk));
-      }
-      const content = Buffer.concat(chunks).toString("utf-8");
-      const findings = scanUnicode(content, "stdin");
-      results.push({
-        source: "stdin",
-        findings,
-        clean: findings.length === 0,
+      for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+      const findings = await scanBytes(new Uint8Array(Buffer.concat(chunks)), {
+        path: options.as ?? "stdin",
+        expectedScripts: config.expected_scripts,
       });
-    }
-    // --- Clipboard mode ---
-    else if (options.clipboard) {
+      results.push(result("stdin", findings));
+    } else if (options.clipboard) {
       const clipboard = await readClipboardHTML();
-      const findings = [];
-
-      // Run unicode scan on plain text
-      findings.push(...scanUnicode(clipboard.plainText, "clipboard"));
-
-      // Run clipboard HTML analysis if HTML is available
-      if (clipboard.html) {
-        findings.push(
-          ...analyzeClipboardHTML(clipboard.html, clipboard.plainText),
-        );
-      }
-
-      results.push({
-        source: "clipboard",
-        findings,
-        clean: findings.length === 0,
+      const findings = scanText(clipboard.plainText, {
+        path: "clipboard.txt",
+        expectedScripts: config.expected_scripts,
       });
+      if (clipboard.html) findings.push(...analyzeClipboardHTML(clipboard.html, clipboard.plainText));
+      results.push(result("clipboard", findings));
+    } else {
+      progress.update("Finding files…", true);
+      const files = await collectFiles(targets, config.ignore ?? [], options);
+      const label = (done: number) => `Scanning ${fmtCount(done)} / ${fmtCount(files.length)} files`;
+      const scanned = await scanFiles(files, { expectedScripts: config.expected_scripts, maxBytes }, (done) =>
+        progress.update(label(done)),
+      );
+      results.push(...scanned);
     }
-    // --- File/directory mode ---
-    else {
-      const targetPath = resolve(target || ".");
+    progress.clear();
 
-      let fileStat;
-      try {
-        fileStat = statSync(targetPath);
-      } catch {
-        console.error(`Error: Cannot access "${targetPath}"`);
-        process.exit(2);
-      }
-
-      if (fileStat.isFile()) {
-        results.push(await scanFile(targetPath));
-      } else if (fileStat.isDirectory()) {
-        // Default to recursive for directories (use --no-recursive to disable)
-        if (options.recursive !== false) {
-          // Recursive scan (default when scanning a directory)
-          const files = await walkDirectory(
-            targetPath,
-            config.ignore ?? [],
-          );
-          if (format === "pretty") {
-            console.log(`Scanning ${files.length} files...`);
-          }
-          for (const file of files) {
-            results.push(await scanFile(file));
-          }
-        } else {
-          // Non-recursive: scan only files directly in the directory
-          const { readdirSync } = await import("node:fs");
-          const entries = readdirSync(targetPath, {
-            withFileTypes: true,
-          });
-          const files = entries
-            .filter((e) => e.isFile())
-            .map((e) => resolve(targetPath, e.name))
-            .filter(
-              (f) =>
-                !matchesIgnorePattern(
-                  relative(targetPath, f),
-                  config.ignore ?? [],
-                ),
-            );
-          for (const file of files) {
-            results.push(await scanFile(file));
-          }
-        }
-      }
-    }
-
-    // Output
-    console.log(formatFindings(results, format));
-
-    // Exit code
-    const allFindings = results.flatMap((r) => r.findings);
-    if (meetsThreshold(allFindings, failOn)) {
-      process.exit(1);
-    }
+    const elapsedMs = performance.now() - started;
+    await writeOut(
+      formatFindings(results, format, { verbose: options.verbose, cwd: process.cwd(), elapsedMs }),
+    );
+    // exitCode, not exit(): exiting immediately can truncate large output on a pipe
+    if (
+      meetsThreshold(
+        results.flatMap((r) => r.findings),
+        failOn,
+      )
+    )
+      process.exitCode = 1;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`Error: ${message}`);
-    process.exit(2);
+    progress.clear();
+    fail(err instanceof Error ? err.message : String(err));
   }
 }

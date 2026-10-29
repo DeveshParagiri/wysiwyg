@@ -1,299 +1,244 @@
-import type { ScanResult, OutputFormat, Finding, Severity } from "../../core/types.js";
-import pc from "picocolors";
-import { createPatch, diffLines } from "diff";
 import { relative } from "node:path";
+import { diffWordsWithSpace } from "diff";
+import pc from "picocolors";
+import { visualize } from "../../core/text/lines.js";
+import type { Finding, OutputFormat, ScanResult, Severity } from "../../core/types.js";
+import { formatSARIF } from "./sarif.js";
 
 /**
- * Get terminal width, with fallback.
+ * Terminal and JSON output.
+ *
+ * Every string that originates from scanned content goes through
+ * visualize() before printing: a payload containing ANSI escapes must not be
+ * able to rewrite or hide the report itself.
  */
-function getTermWidth(): number {
-  return process.stdout.columns || 80;
+
+export interface FormatOptions {
+  /** Show info-level findings in pretty output (always included in JSON/SARIF). */
+  verbose?: boolean;
+  /** Paths are printed relative to this directory. */
+  cwd?: string;
+  /** Wall time of the scan, shown in the summary. */
+  elapsedMs?: number;
+}
+
+// ─── Layout ──────────────────────────────────────────────────────────
+
+const color = pc.isColorSupported;
+/** Hidden text: dark red background, so the payload stands out inside the "AI reads" row. */
+const hl = (s: string) => (color ? `\x1b[48;5;52m\x1b[38;5;217m${s}\x1b[0m` : `⟦${s}⟧`);
+/** Text the human sees but the agent's copy replaced (e.g. a terminal overwrite). */
+const lo = (s: string) => (color ? pc.dim(pc.strikethrough(s)) : s);
+
+const INDENT = " ".repeat(12);
+const LABEL_WIDTH = 10;
+const MAX_ROW_LINES = 6;
+
+function termWidth(): number {
+  return Math.max(60, process.stdout.columns || 100);
+}
+
+function displayPath(source: string, cwd?: string): string {
+  if (source === "stdin" || source === "clipboard" || /^(https?|mcp):/.test(source)) return visualize(source);
+  const rel = relative(cwd ?? process.cwd(), source);
+  return visualize(rel && !rel.startsWith("..") ? rel : source);
+}
+
+const RANK: Record<Severity, number> = { info: 0, warning: 1, critical: 2 };
+
+function visible(findings: Finding[], opts: FormatOptions): Finding[] {
+  return opts.verbose ? findings : findings.filter((f) => f.severity !== "info");
+}
+
+// ─── Wrapped, highlighted rows ───────────────────────────────────────
+
+interface Segment {
+  text: string;
+  style?: (s: string) => string;
 }
 
 /**
- * Strip ANSI escape codes from a string.
+ * Wrap styled segments to `width` columns (breaking at spaces where possible),
+ * splitting on newlines. Returns at most `maxLines` lines plus a truncation note.
  */
-function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\u001b\[[0-9;]*m/g, "");
-}
-
-/**
- * Truncate a string (with ANSI codes) to a visible width, adding ellipsis if needed.
- */
-function truncateVisible(str: string, maxVisible: number): string {
-  const stripped = stripAnsi(str);
-  if (stripped.length <= maxVisible) return str;
-
-  let visible = 0;
-  let i = 0;
-  while (i < str.length && visible < maxVisible - 1) {
-    if (str[i] === "\u001b" && str[i + 1] === "[") {
-      const end = str.indexOf("m", i);
-      if (end !== -1) {
-        i = end + 1;
-        continue;
+function wrap(segments: Segment[], width: number, maxLines = MAX_ROW_LINES): string[] {
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  const flush = () => {
+    lines.push(line);
+    line = "";
+    used = 0;
+  };
+  for (const seg of segments) {
+    for (const [i, part] of seg.text.split("\n").entries()) {
+      if (i > 0) flush();
+      let rest = part;
+      while (rest.length) {
+        const room = width - used;
+        let take = rest.length <= room ? rest.length : rest.lastIndexOf(" ", room);
+        if (take <= 0) take = used === 0 ? room : 0;
+        if (take === 0) {
+          flush();
+          rest = rest.replace(/^ /, "");
+          continue;
+        }
+        const chunk = rest.slice(0, take);
+        line += seg.style ? seg.style(chunk) : chunk;
+        used += chunk.length;
+        rest = rest.slice(take);
+        if (rest.length) {
+          flush();
+          rest = rest.replace(/^ /, "");
+        }
       }
     }
-    visible++;
-    i++;
   }
-  return str.slice(0, i) + pc.dim("…");
+  if (line || !lines.length) flush();
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept.push(pc.dim(`… ${lines.length - maxLines} more line(s) — use --format json for the full text`));
+    return kept;
+  }
+  return lines;
 }
 
-// ─── Unified diff rendering ──────────────────────────────────────────
+/** "you see" / "AI reads" rows, with the agent-only text highlighted. */
+function formatViews(finding: Finding): string[] {
+  const tidy = (v: string) =>
+    visualize(v)
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .join("\n")
+      .trim();
+  const human = tidy(finding.humanView || "");
+  const agent = tidy(finding.agentView || "");
+  if (!human && !agent) return [];
+  const width = termWidth() - INDENT.length - LABEL_WIDTH - 2;
+  const row = (label: string, segments: Segment[]) =>
+    wrap(segments, width).map(
+      (l, i) => `${INDENT}${i === 0 ? pc.dim(label.padEnd(LABEL_WIDTH)) : " ".repeat(LABEL_WIDTH)}${l}`,
+    );
 
-// Muted background colors using ANSI 256-color codes.
-const REMOVED_BG = "\x1b[48;5;52m";  // dark muted red bg
-const REMOVED_FG = "\x1b[38;5;210m"; // soft red text
-const ADDED_BG = "\x1b[48;5;22m";    // dark muted green bg
-const ADDED_FG = "\x1b[38;5;114m";   // soft green text
-const RESET = "\x1b[0m";
+  if (human === agent) return row("text", [{ text: agent }]);
 
-// Layout constants
-const LEFT_PAD = 3;   // "   " indent for diff block (under └─)
-const RIGHT_PAD = 2;  // 2 chars margin from terminal right edge
-
-/**
- * Pad a plain string to exact width with trailing spaces,
- * truncating with ellipsis if too long.
- */
-function fitToWidth(str: string, width: number): string {
-  if (str.length > width) {
-    return str.slice(0, width - 1) + "…";
-  }
-  return str + " ".repeat(width - str.length);
-}
-
-/**
- * Render a unified diff for a finding using `createPatch` from the `diff` library.
- *
- * All diff lines (context, H, A) are padded to a fixed width:
- *   termWidth - LEFT_PAD - RIGHT_PAD
- * so colored backgrounds form clean, equal-length bars.
- */
-function formatDiffBlock(finding: Finding): string {
-  const termWidth = getTermWidth();
-  const barWidth = termWidth - LEFT_PAD - RIGHT_PAD;
-  const indent = " ".repeat(LEFT_PAD);
-  const humanView = finding.humanView || "";
-  const agentView = finding.agentView || "";
-
-  // If identical, just show context lines with line numbers
-  if (humanView === agentView) {
-    const startLine = Math.max(1, (finding.line || 1) - 2);
-    return humanView.split("\n").map((line, i) => {
-      const row = fitToWidth(`${String(startLine + i).padStart(4)}  ${line}`, barWidth);
-      return `${indent}${pc.dim(row)}`;
-    }).join("\n");
-  }
-
-  // Generate a proper unified diff patch
-  const patch = createPatch(
-    "human",
-    humanView + "\n",
-    agentView + "\n",
-    "",
-    "",
-    { context: 3 },
-  );
-
-  const patchLines = patch.split("\n");
-  const out: string[] = [];
-
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const patchLine of patchLines) {
-    // Skip file headers
-    if (
-      patchLine.startsWith("Index:") ||
-      patchLine.startsWith("===") ||
-      patchLine.startsWith("---") ||
-      patchLine.startsWith("+++")
-    ) {
-      continue;
-    }
-
-    // Parse @@ hunk header for line numbers
-    const hunkMatch = patchLine.match(/^@@\s+-(\d+)/);
-    if (hunkMatch) {
-      const contextStart = Math.max(1, (finding.line || 1) - 2);
-      oldLine = contextStart;
-      newLine = contextStart;
-      continue;
-    }
-
-    if (patchLine === "\\ No newline at end of file") continue;
-
-    if (patchLine.startsWith("-")) {
-      const content = patchLine.slice(1);
-      const row = fitToWidth(`${String(oldLine).padStart(4)} H ${content}`, barWidth);
-      out.push(`${indent}${REMOVED_BG}${REMOVED_FG}${row}${RESET}`);
-      oldLine++;
-    } else if (patchLine.startsWith("+")) {
-      const content = patchLine.slice(1);
-      const row = fitToWidth(`${String(newLine).padStart(4)} A ${content}`, barWidth);
-      out.push(`${indent}${ADDED_BG}${ADDED_FG}${row}${RESET}`);
-      newLine++;
-    } else if (patchLine.startsWith(" ")) {
-      const content = patchLine.slice(1);
-      const row = fitToWidth(`${String(oldLine).padStart(4)}   ${content}`, barWidth);
-      out.push(`${indent}${pc.dim(row)}`);
-      oldLine++;
-      newLine++;
+  const humanSegs: Segment[] = [];
+  const agentSegs: Segment[] = [];
+  for (const part of diffWordsWithSpace(human, agent)) {
+    if (part.added) {
+      // Keep surrounding whitespace outside the highlight
+      const [, lead, body, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(part.value)!;
+      agentSegs.push({ text: lead }, { text: body, style: hl }, { text: trail });
+    } else if (part.removed) humanSegs.push({ text: part.value, style: lo });
+    else {
+      humanSegs.push({ text: part.value });
+      agentSegs.push({ text: part.value });
     }
   }
-
-  return out.join("\n");
+  return [
+    ...(human ? row("you see", humanSegs) : row("you see", [{ text: "(nothing)", style: pc.dim }])),
+    ...row("AI reads", agentSegs),
+  ];
 }
 
-/**
- * Convert a file path to a relative path from cwd.
- * Keeps special sources like "stdin" and "clipboard" as-is.
- */
-function toRelativePath(source: string): string {
-  if (source === "stdin" || source === "clipboard") return source;
-  const rel = relative(process.cwd(), source);
-  return rel || source;
-}
+// ─── Findings ────────────────────────────────────────────────────────
 
-// ─── Finding / Source / Summary formatting ─────────────────────────────
-
-/**
- * Severity label with color.
- */
 function severityLabel(severity: Severity): string {
   switch (severity) {
     case "critical":
-      return pc.red(pc.bold("CRITICAL"));
+      return pc.red(pc.bold("CRITICAL".padEnd(INDENT.length - 2)));
     case "warning":
-      return pc.yellow(pc.bold("WARNING"));
+      return pc.yellow(pc.bold("WARNING".padEnd(INDENT.length - 2)));
     case "info":
-      return pc.dim("INFO");
+      return pc.dim("INFO".padEnd(INDENT.length - 2));
   }
 }
 
-/**
- * Format a single finding with └─ tree connector.
- */
-function formatFinding(finding: Finding, isFirst: boolean): string {
-  const lines: string[] = [];
-
-  // Tree connector only on first finding
-  const prefix = isFirst ? pc.dim("└─") + " " : "   ";
-  const lineInfo = finding.line ? pc.dim(`:${finding.line}`) : "";
-  lines.push(
-    `${prefix}${severityLabel(finding.severity)}${lineInfo} ${finding.message}`,
-  );
-
-  // Diff block
-  if (finding.humanView || finding.agentView) {
-    lines.push(formatDiffBlock(finding));
+function formatFinding(finding: Finding): string {
+  const where = finding.line ? `line ${finding.line}` : finding.location ? visualize(finding.location) : "";
+  const headline = visualize(finding.technique ?? finding.message);
+  const lines = [
+    `  ${severityLabel(finding.severity)}${where ? `${pc.dim(where)} ${pc.dim("·")} ` : ""}${headline}  ${pc.dim(finding.ruleId)}`,
+    ...formatViews(finding),
+  ];
+  if (finding.trigger) {
+    lines.push(`${INDENT}${pc.yellow("⚠")} ${pc.dim("instructs the AI:")} "${visualize(finding.trigger)}"`);
   }
-
   return lines.join("\n");
 }
 
-/**
- * Format findings for a single source.
- */
-function formatSource(result: ScanResult): string {
-  if (result.clean) {
-    return `${pc.green("✓")} ${pc.dim(toRelativePath(result.source))} — No hidden content detected.`;
-  }
+const plural = (n: number, word: string) => `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
 
-  const lines: string[] = [];
-  const critCount = result.findings.filter((f) => f.severity === "critical").length;
-  const warnCount = result.findings.filter((f) => f.severity === "warning").length;
-  const infoCount = result.findings.filter((f) => f.severity === "info").length;
-
+function counts(findings: Finding[], colored: boolean): string {
   const parts: string[] = [];
-  if (critCount > 0) parts.push(pc.red(`${critCount} critical`));
-  if (warnCount > 0) parts.push(pc.yellow(`${warnCount} warning`));
-  if (infoCount > 0) parts.push(pc.dim(`${infoCount} info`));
-
-  const filePath = toRelativePath(result.source);
-  lines.push(
-    `${pc.red("●")} ${pc.bold(filePath)} ${pc.dim("—")} ${parts.join(pc.dim(", "))}`,
-  );
-
-  for (let i = 0; i < result.findings.length; i++) {
-    lines.push(formatFinding(result.findings[i], i === 0));
+  const c = (s: Severity) => findings.filter((f) => f.severity === s).length;
+  const paint = (s: Severity, text: string) =>
+    !colored ? text : s === "critical" ? pc.red(text) : s === "warning" ? pc.yellow(text) : pc.dim(text);
+  for (const s of ["critical", "warning", "info"] as Severity[]) {
+    // "2 critical, 3 warnings, 5 info"
+    if (c(s))
+      parts.push(paint(s, s === "warning" ? plural(c(s), s) : `${c(s).toLocaleString("en-US")} ${s}`));
   }
+  return parts.join(colored ? pc.dim(", ") : ", ");
+}
 
+function worst(findings: Finding[]): Severity | null {
+  return findings.reduce<Severity | null>(
+    (w, f) => (!w || RANK[f.severity] > RANK[w] ? f.severity : w),
+    null,
+  );
+}
+
+function marker(findings: Finding[]): string {
+  const w = worst(findings);
+  return w === "critical" ? pc.red("●") : w === "warning" ? pc.yellow("●") : pc.dim("○");
+}
+
+function formatSource(result: ScanResult, opts: FormatOptions): string {
+  const shown = visible(result.findings, opts).sort(
+    (a, b) => RANK[b.severity] - RANK[a.severity] || (a.line ?? 0) - (b.line ?? 0),
+  );
+  const header = `${marker(result.findings)} ${pc.bold(displayPath(result.source, opts.cwd))}  ${counts(result.findings, true)}`;
+  // Findings sit directly under their file; a blank line separates findings
+  return [header, shown.map(formatFinding).join("\n\n")].join("\n");
+}
+
+function elapsed(opts: FormatOptions): string {
+  if (opts.elapsedMs === undefined) return "";
+  const ms = opts.elapsedMs;
+  return pc.dim(` · ${ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`}`);
+}
+
+// ─── Public API ──────────────────────────────────────────────────────
+
+/** Totals line; with many affected files, a compact per-file recap after the details. */
+export function formatSummary(results: ScanResult[], opts: FormatOptions = {}, note = ""): string {
+  const all = results.flatMap((r) => r.findings);
+  const dirty = results.filter((r) => !r.clean);
+  const lines = [
+    `${pc.bold(`${dirty.length.toLocaleString("en-US")} of ${plural(results.length, "file")}`)} with findings  ${counts(all, true)}${elapsed(opts)}${note}`,
+  ];
+  if (dirty.length >= 4) {
+    for (const r of dirty)
+      lines.push(
+        `  ${marker(r.findings)} ${displayPath(r.source, opts.cwd)}  ${pc.dim(counts(r.findings, false))}`,
+      );
+  }
   return lines.join("\n");
 }
 
-// ─── Public API ────────────────────────────────────────────────────────
-
-/**
- * Format a summary line for multiple scan results.
- */
-export function formatSummary(results: ScanResult[]): string {
-  const lines: string[] = [];
-  const totalFiles = results.length;
-  const cleanFiles = results.filter((r) => r.clean).length;
-  const dirtyFiles = totalFiles - cleanFiles;
-  const allFindings = results.flatMap((r) => r.findings);
-  const critCount = allFindings.filter((f) => f.severity === "critical").length;
-  const warnCount = allFindings.filter((f) => f.severity === "warning").length;
-  const infoCount = allFindings.filter((f) => f.severity === "info").length;
-
-  // Header: "13/20 files with findings (16 critical, 5 warning)"
-  const totalCounts: string[] = [];
-  if (critCount > 0) totalCounts.push(pc.red(`${critCount} critical`));
-  if (warnCount > 0) totalCounts.push(pc.yellow(`${warnCount} warning`));
-  if (infoCount > 0) totalCounts.push(pc.dim(`${infoCount} info`));
-
-  lines.push(
-    `${pc.bold(`${dirtyFiles}/${totalFiles}`)} file${dirtyFiles !== 1 ? "s" : ""} with findings ${pc.dim("(")}${totalCounts.join(pc.dim(", "))}${pc.dim(")")}`,
-  );
-
-  // File list with dynamic padding based on longest path
-  const dirtyResults = results.filter((r) => !r.clean);
-  if (dirtyResults.length === 0) {
-    return lines.join("\n");
-  }
-  const relPaths = dirtyResults.map((r) => toRelativePath(r.source));
-  const maxPathLen = Math.max(...relPaths.map((p) => p.length));
-  const padWidth = Math.min(maxPathLen + 2, 60); // cap at 60
-
-  for (let i = 0; i < dirtyResults.length; i++) {
-    const result = dirtyResults[i];
-    const rCrit = result.findings.filter((f) => f.severity === "critical").length;
-    const rWarn = result.findings.filter((f) => f.severity === "warning").length;
-    const counts: string[] = [];
-    if (rCrit > 0) counts.push(`${rCrit} critical`);
-    if (rWarn > 0) counts.push(`${rWarn} warning`);
-    const n = result.findings.length;
-    lines.push(
-      `${pc.red("●")} ${relPaths[i].padEnd(padWidth)} ${n} finding${n !== 1 ? "s" : ""} (${counts.join(", ")})`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * Format results as JSON.
- */
 export function formatJSON(results: ScanResult[]): string {
-  const allFindings = results.flatMap((r) => r.findings);
+  const all = results.flatMap((r) => r.findings);
   return JSON.stringify(
     {
-      results: results.map((r) => ({
-        source: r.source,
-        clean: r.clean,
-        findings: r.findings,
-      })),
+      results: results.map((r) => ({ source: r.source, clean: r.clean, findings: r.findings })),
       summary: {
         filesScanned: results.length,
         filesClean: results.filter((r) => r.clean).length,
-        totalFindings: allFindings.length,
-        critical: allFindings.filter((f) => f.severity === "critical").length,
-        warning: allFindings.filter((f) => f.severity === "warning").length,
-        info: allFindings.filter((f) => f.severity === "info").length,
+        totalFindings: all.length,
+        critical: all.filter((f) => f.severity === "critical").length,
+        warning: all.filter((f) => f.severity === "warning").length,
+        info: all.filter((f) => f.severity === "info").length,
       },
     },
     null,
@@ -301,80 +246,24 @@ export function formatJSON(results: ScanResult[]): string {
   );
 }
 
-/**
- * Kept for backward compat with tests — renders a titled box.
- */
-export function formatBox(title: string, lines: string[]): string {
-  const width = Math.min(getTermWidth() - 4, 76);
-  const innerWidth = width - 4;
-  const titleLine = `┌─ ${title} ${"─".repeat(Math.max(0, width - title.length - 4))}┐`;
-  const bottomLine = `└${"─".repeat(width - 2)}┘`;
-
-  const wrappedLines: string[] = [];
-  for (const line of lines) {
-    const stripped = stripAnsi(line);
-    if (stripped.length <= innerWidth) {
-      const padding = " ".repeat(Math.max(0, innerWidth - stripped.length));
-      wrappedLines.push(`│ ${line}${padding} │`);
-    } else {
-      const visibleChunk = truncateVisible(line, innerWidth);
-      const visibleStripped = stripAnsi(visibleChunk);
-      const padding = " ".repeat(Math.max(0, innerWidth - visibleStripped.length));
-      wrappedLines.push(`│ ${visibleChunk}${padding} │`);
-    }
-  }
-
-  return [titleLine, ...wrappedLines, bottomLine].join("\n");
-}
-
-/**
- * Kept for backward compat with tests.
- */
-export function formatDiff(humanView: string, agentView: string): string {
-  if (humanView === agentView) return agentView;
-  const changes = diffLines(humanView, agentView);
-  let result = "";
-  for (const change of changes) {
-    if (change.added) result += pc.red(pc.bold(change.value));
-    else if (!change.removed) result += change.value;
-  }
-  return result;
-}
-
-/**
- * Main formatting entry point.
- */
 export function formatFindings(
   results: ScanResult[],
   format: OutputFormat,
+  opts: FormatOptions = {},
 ): string {
-  if (format === "json") {
-    return formatJSON(results);
-  }
+  if (format === "json") return formatJSON(results);
+  if (format === "sarif") return formatSARIF(results, opts.cwd);
 
-  if (results.length === 0) {
-    return `${pc.green("✓")} No files to scan.`;
-  }
+  if (results.length === 0) return `${pc.yellow("!")} No files to scan.`;
 
-  const allClean = results.every((r) => r.clean);
-  if (allClean) {
-    if (results.length === 1) {
-      return `${pc.green("✓")} No hidden content detected.`;
-    }
-    return `${pc.green("✓")} No hidden content detected in ${results.length} files.`;
-  }
+  const withOutput = results.filter((r) => !r.clean || visible(r.findings, opts).length > 0);
+  const infoCount = results.flatMap((r) => r.findings).filter((f) => f.severity === "info").length;
+  const infoNote = !opts.verbose && infoCount ? pc.dim(` · ${infoCount} info hidden (--verbose)`) : "";
 
-  if (results.length === 1) {
-    return formatSource(results[0]);
+  if (!withOutput.length) {
+    const where = results.length === 1 ? "" : pc.dim(` · ${plural(results.length, "file")}`);
+    return `${pc.green("✓")} No hidden content detected${where}${elapsed(opts)}${infoNote}`;
   }
-
-  const lines: string[] = [];
-  for (const result of results) {
-    if (!result.clean) {
-      lines.push(formatSource(result));
-      lines.push("");
-    }
-  }
-  lines.push(formatSummary(results));
-  return lines.join("\n");
+  const blocks = withOutput.map((r) => formatSource(r, opts));
+  return [...blocks, formatSummary(results, opts, infoNote)].join("\n\n");
 }

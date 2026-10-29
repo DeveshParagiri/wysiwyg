@@ -1,9 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import {
-  detectScript,
-  getDominantScript,
-  isJoiningScript,
-} from "../../src/core/utils/script-detect.js";
+import { describe, expect, test } from "bun:test";
+import { detectScript, getDominantScript, isJoiningScript } from "../../src/core/utils/script-detect.js";
 
 describe("detectScript", () => {
   test("detects Latin characters", () => {

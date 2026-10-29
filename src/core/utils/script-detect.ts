@@ -1,4 +1,23 @@
-import { JOINING_SCRIPTS } from "../constants/index.js";
+/** Scripts where ZWJ/ZWNJ are part of normal orthography. */
+export const JOINING_SCRIPTS = [
+  "Arabic",
+  "Syriac",
+  "Mandaic",
+  "Mongolian",
+  "Devanagari",
+  "Bengali",
+  "Gurmukhi",
+  "Gujarati",
+  "Oriya",
+  "Tamil",
+  "Telugu",
+  "Kannada",
+  "Malayalam",
+  "Sinhala",
+  "Thai",
+  "Tibetan",
+  "Myanmar",
+] as const;
 
 /**
  * Simple Unicode script detection based on codepoint ranges.
@@ -104,16 +123,15 @@ export function detectScript(codepoint: number): string {
   if (
     (codepoint >= 0x4e00 && codepoint <= 0x9fff) ||
     (codepoint >= 0x3400 && codepoint <= 0x4dbf) ||
-    (codepoint >= 0x3000 && codepoint <= 0x303f)
+    (codepoint >= 0x3000 && codepoint <= 0x30ff) || // CJK punctuation, Hiragana, Katakana
+    (codepoint >= 0x31f0 && codepoint <= 0x31ff) ||
+    (codepoint >= 0xff00 && codepoint <= 0xffef)
   ) {
     return "CJK";
   }
 
   // Hangul (Korean)
-  if (
-    (codepoint >= 0xac00 && codepoint <= 0xd7af) ||
-    (codepoint >= 0x1100 && codepoint <= 0x11ff)
-  ) {
+  if ((codepoint >= 0xac00 && codepoint <= 0xd7af) || (codepoint >= 0x1100 && codepoint <= 0x11ff)) {
     return "Hangul";
   }
 
@@ -155,11 +173,7 @@ export function detectScript(codepoint: number): string {
  * Get the dominant script of characters surrounding a position.
  * Looks at `window` characters before and after the position.
  */
-export function getDominantScript(
-  content: string,
-  position: number,
-  window: number = 20,
-): string {
+export function getDominantScript(content: string, position: number, window: number = 20): string {
   const scriptCounts = new Map<string, number>();
   const start = Math.max(0, position - window);
   const end = Math.min(content.length, position + window);

@@ -1,105 +1,128 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import YAML from "yaml";
-import type { WysiwygConfig } from "../../core/types.js";
+import { isAgentInstructionFile } from "../../core/constants/agent-files.js";
 import { DEFAULT_CONFIG } from "../../core/constants/index.js";
+import type { Finding, WysiwygConfig } from "../../core/types.js";
+import { matchesIgnorePattern } from "../platform/fs.js";
 
 const CONFIG_FILENAME = ".wysiwygrc";
 
 /**
- * Find a .wysiwygrc config file by walking up from startDir.
+ * Config trust model.
+ *
+ * A .wysiwygrc inside the scanned tree is written by whoever controls that
+ * tree — in CI, possibly the attacker. It may narrow what is scanned only in
+ * limited ways: patterns that match everything are refused, and agent
+ * instruction files are always scanned regardless of ignore patterns. A
+ * config given with --config or found in the home directory is trusted.
  */
-export function findConfigFile(startDir: string): string | null {
-  let dir = startDir;
-
-  while (true) {
-    const candidate = join(dir, CONFIG_FILENAME);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-
-    const parent = dirname(dir);
-    if (parent === dir) break; // reached root
-    dir = parent;
-  }
-
-  // Check home directory
-  const homeConfig = join(homedir(), CONFIG_FILENAME);
-  if (existsSync(homeConfig)) {
-    return homeConfig;
-  }
-
-  return null;
+export interface LoadedConfig {
+  config: Required<WysiwygConfig>;
+  path: string | null;
+  trusted: boolean;
+  /** Problems with the config itself, reported like any other finding. */
+  findings: Finding[];
 }
 
-/**
- * Validate and type-check a raw config object.
- */
-export function validateConfig(raw: unknown): WysiwygConfig {
-  if (typeof raw !== "object" || raw === null) {
-    return {};
+/** Find a .wysiwygrc by walking up from startDir; falls back to ~/.wysiwygrc. */
+export function findConfigFile(startDir: string): { path: string; trusted: boolean } | null {
+  let dir = resolve(startDir);
+  const home = homedir();
+  while (true) {
+    const candidate = join(dir, CONFIG_FILENAME);
+    if (existsSync(candidate)) return { path: candidate, trusted: dir === home };
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
+  const homeConfig = join(home, CONFIG_FILENAME);
+  return existsSync(homeConfig) ? { path: homeConfig, trusted: true } : null;
+}
 
+/** Validate and type-check a raw config object. */
+export function validateConfig(raw: unknown): WysiwygConfig {
+  if (typeof raw !== "object" || raw === null) return {};
   const obj = raw as Record<string, unknown>;
   const config: WysiwygConfig = {};
-
   if (Array.isArray(obj.expected_scripts)) {
-    config.expected_scripts = obj.expected_scripts.filter(
-      (s): s is string => typeof s === "string",
-    );
+    config.expected_scripts = obj.expected_scripts.filter((s): s is string => typeof s === "string");
   }
-
   if (Array.isArray(obj.ignore)) {
-    config.ignore = obj.ignore.filter(
-      (s): s is string => typeof s === "string",
-    );
+    config.ignore = obj.ignore.filter((s): s is string => typeof s === "string");
   }
-
-  if (
-    obj.fail_on === "critical" ||
-    obj.fail_on === "warning" ||
-    obj.fail_on === "info"
-  ) {
+  if (obj.fail_on === "critical" || obj.fail_on === "warning" || obj.fail_on === "info") {
     config.fail_on = obj.fail_on;
   }
-
   return config;
 }
 
-/**
- * Merge a base config with overrides.
- */
-export function mergeConfig(
-  base: Required<WysiwygConfig>,
-  override: WysiwygConfig,
-): Required<WysiwygConfig> {
+/** Merge a base config with overrides. */
+export function mergeConfig(base: Required<WysiwygConfig>, override: WysiwygConfig): Required<WysiwygConfig> {
   return {
-    expected_scripts:
-      override.expected_scripts ?? base.expected_scripts,
+    expected_scripts: override.expected_scripts ?? base.expected_scripts,
     ignore: override.ignore ?? base.ignore,
     fail_on: override.fail_on ?? base.fail_on,
   };
 }
 
-/**
- * Load config from .wysiwygrc, merging with defaults.
- */
-export function loadConfig(startDir?: string): Required<WysiwygConfig> {
-  const dir = startDir ?? process.cwd();
-  const configPath = findConfigFile(dir);
+/** Ignore patterns from an untrusted config that would hide everything or an agent file. */
+function overbroad(pattern: string): boolean {
+  if (matchesIgnorePattern("any/file.txt", [pattern]) && matchesIgnorePattern("README.md", [pattern]))
+    return true;
+  const probes = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".cursorrules",
+    ".claude/skills/x/SKILL.md",
+    ".cursor/rules/x.mdc",
+  ];
+  return probes.some((p) => isAgentInstructionFile(p) && matchesIgnorePattern(p, [pattern]));
+}
 
-  if (!configPath) {
-    return { ...DEFAULT_CONFIG };
-  }
+export function loadConfig(startDir?: string, explicitPath?: string): LoadedConfig {
+  const found = explicitPath
+    ? { path: resolve(explicitPath), trusted: true }
+    : findConfigFile(startDir ?? process.cwd());
+  if (!found) return { config: { ...DEFAULT_CONFIG }, path: null, trusted: true, findings: [] };
 
+  const findings: Finding[] = [];
+  let validated: WysiwygConfig;
   try {
-    const raw = readFileSync(configPath, "utf-8");
-    const parsed = YAML.parse(raw);
-    const validated = validateConfig(parsed);
-    return mergeConfig({ ...DEFAULT_CONFIG }, validated);
+    validated = validateConfig(YAML.parse(readFileSync(found.path, "utf-8")));
   } catch (err) {
-    console.warn(`Warning: Failed to parse ${configPath}: ${err instanceof Error ? err.message : String(err)}. Using defaults.`);
-    return { ...DEFAULT_CONFIG };
+    if (explicitPath) throw err;
+    findings.push({
+      ruleId: "config/parse-error",
+      type: "scanner_evasion",
+      severity: "warning",
+      message: `Could not parse ${CONFIG_FILENAME}: ${err instanceof Error ? err.message : String(err)} — using defaults`,
+      humanView: "",
+      agentView: "",
+    });
+    return { config: { ...DEFAULT_CONFIG }, path: found.path, trusted: found.trusted, findings };
   }
+
+  if (!found.trusted && validated.ignore) {
+    const refused = validated.ignore.filter(overbroad);
+    if (refused.length) {
+      validated.ignore = validated.ignore.filter((p) => !refused.includes(p));
+      findings.push({
+        ruleId: "config/overbroad-ignore",
+        type: "scanner_evasion",
+        severity: "warning",
+        message: `${CONFIG_FILENAME} in the scanned tree tries to ignore everything or agent instruction files (${refused.map((p) => JSON.stringify(p)).join(", ")}) — patterns refused`,
+        humanView: "",
+        agentView: "",
+        detail: "Use --config to supply a trusted configuration, or --no-config in CI.",
+      });
+    }
+  }
+  return {
+    config: mergeConfig({ ...DEFAULT_CONFIG }, validated),
+    path: found.path,
+    trusted: found.trusted,
+    findings,
+  };
 }

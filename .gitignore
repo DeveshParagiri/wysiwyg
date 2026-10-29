@@ -3,3 +3,6 @@ dist/
 *.tgz
 *.bun-build
 private/
+
+# The Claude Code plugin installs from git, so its bundle is committed
+!/plugin/dist/
