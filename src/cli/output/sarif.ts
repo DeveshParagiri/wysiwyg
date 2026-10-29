@@ -18,7 +18,7 @@ export function formatSARIF(results: ScanResult[], cwd = process.cwd()): string 
   const sarifResults = results.flatMap((r) =>
     r.findings.map((f) => {
       if (!rules.has(f.ruleId)) rules.set(f.ruleId, { id: f.ruleId, shortDescription: { text: f.ruleId } });
-      const uri = /^(stdin|clipboard|https?:)/.test(r.source)
+      const uri = /^(stdin|clipboard|https?:|mcp:)/.test(r.source)
         ? r.source
         : relative(cwd, r.source).split("\\").join("/");
       return {
