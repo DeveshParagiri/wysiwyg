@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import MarkdownIt from "markdown-it";
 import { FETCH_TIMEOUT } from "../constants/index.js";
 import { AGENT_CLIENTS, BROWSER, type ClientProfile } from "../constants/user-agents.js";
+import { descendants } from "../html/dom.js";
 import { classifyIntent } from "../intent.js";
 import { scanText } from "../pipeline.js";
 import { concealedFinding, isClean } from "../policy.js";
@@ -105,11 +106,9 @@ export function responseText(body: string, contentType: string): string {
   $("script, style, noscript, template").remove();
   // Join text nodes with spaces: .text() glues adjacent elements ("Compute" + "AI" → "ComputeAI").
   const parts: string[] = [];
-  $("*")
-    .contents()
-    .each((_i, node) => {
-      if (node.type === "text") parts.push((node as unknown as { data: string }).data);
-    });
+  for (const node of descendants($.root()[0])) {
+    if (node.type === "text") parts.push((node as unknown as { data: string }).data);
+  }
   return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 

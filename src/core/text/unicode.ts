@@ -152,6 +152,8 @@ function collectRuns(content: string): Run[] {
 }
 
 const RANK: Record<Severity, number> = { info: 0, warning: 1, critical: 2 };
+/** How far around a bidi control we look for its span (keeps per-control work constant). */
+const BIDI_WINDOW = 2048;
 const MAX_PER_RULE = 25;
 
 export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Finding[] {
@@ -314,13 +316,14 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
       } else if (cp === 0x202c) {
         // POP DIRECTIONAL FORMATTING closes an embedding and reorders nothing itself. When it
         // closes an opener on the same line it is part of that finding; a stray one is info.
-        const lineStart = content.lastIndexOf("\n", run.start) + 1;
-        if (/[\u202a\u202b\u202d\u202e]/.test(content.slice(lineStart, run.start))) continue;
+        // Look back a bounded window (thousands of controls on one line must stay linear)
+        const before = content.slice(Math.max(0, run.start - BIDI_WINDOW), run.start);
+        if (/[\u202a\u202b\u202d\u202e]/.test(before.slice(before.lastIndexOf("\n") + 1))) continue;
         raise("info", "unicode/bidi", "bidi_override", cp);
       } else if (isBidiEmbed(cp)) {
         // Critical only when the reordered span (up to POP DIRECTIONAL FORMATTING or end of line)
         // contains letters or digits — otherwise nothing a reader relies on changes on screen.
-        const rest = content.slice(run.end);
+        const rest = content.slice(run.end, run.end + BIDI_WINDOW);
         const span = rest.slice(
           0,
           Math.min(...[rest.indexOf("\u202c"), rest.indexOf("\n")].filter((n) => n >= 0), rest.length),

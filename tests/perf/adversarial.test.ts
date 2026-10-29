@@ -47,5 +47,8 @@ describe("adversarial inputs", () => {
   timed("thousands of Markdown comments", "README.md", "text <!-- note --> more\n".repeat(30_000));
   timed("base64-like noise", "data.txt", "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo ".repeat(60_000));
   timed("hex-like noise", "data.txt", "deadbeef".repeat(200_000));
+  timed("100k sibling elements", "page.html", `<html><body>${"<div>x</div>".repeat(100_000)}</body></html>`);
+  timed("80k HTML comments", "page.html", `<html><body>${"<p>a<!-- c --></p>".repeat(80_000)}</body></html>`);
+  timed("200k bidi overrides on one line", "notes.txt", "ab\u202ecd".repeat(200_000));
   timed("unterminated HTML comment", "page.html", `<html><body><!--${"x ".repeat(500_000)}</body></html>`);
 });
