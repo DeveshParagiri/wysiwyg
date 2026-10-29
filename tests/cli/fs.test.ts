@@ -132,3 +132,19 @@ describe("walkDirectory", () => {
     expect(await rels(root)).toEqual(["a.txt"]);
   });
 });
+
+describe("walkDirectory ordering and cap", () => {
+  test("files, then dot-directories, then other directories", async () => {
+    const root = tree({ "z.md": "x", "a/one.md": "x", ".claude/skills/s/SKILL.md": "x", "b.md": "x" });
+    const order = (await walkDirectory(root, [])).map((f) => f.rel); // walk order, unsorted
+    expect(order).toEqual(["b.md", "z.md", ".claude/skills/s/SKILL.md", "a/one.md"]);
+  });
+
+  test("a directory cap still reaches agent config in dot-directories", async () => {
+    const files: Record<string, string> = { ".claude/skills/s/SKILL.md": "x" };
+    for (let i = 0; i < 50; i++) files[`apps/a${i}/index.ts`] = "x";
+    const root = tree(files);
+    const found = (await walkDirectory(root, ["**"], { maxDirs: 10 })).map((f) => f.rel);
+    expect(found).toContain(".claude/skills/s/SKILL.md");
+  });
+});

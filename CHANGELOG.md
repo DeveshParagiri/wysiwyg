@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- **Faster Claude Code hooks.** The plugin enables Node's on-disk compile cache through a small launcher, which saves about 25 ms on every hooked tool call. A typical call now takes about 0.15 s, mostly Node starting up.
+- **Bounded session start.** The scan for instruction files at session start is capped. It visits files and dot-directories (`.claude`, `.cursor`, `.github`…) first, so they're always reached. A 12,000-directory monorepo now takes about 1 s.
+- **Deterministic file order** in directory scans.
+- **README:** hook costs, how to narrow the hook matcher, and a corrected library example.
+
 ## 0.2.0
 
 A rewrite around one idea: compute what a human sees and what an agent reads, for every format, and report the difference.

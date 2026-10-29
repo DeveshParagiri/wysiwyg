@@ -19,6 +19,12 @@ import { scanFiles } from "../platform/pool.js";
  */
 
 const MAX_FILES = 2000;
+/**
+ * Session start blocks the first prompt, so the project walk is capped. Agent
+ * instruction files live near the top of a repo (CLAUDE.md, .claude/, .cursor/,
+ * .github/), which a depth-first walk in directory order reaches early.
+ */
+const MAX_DIRS = 5000;
 const USER_LOCATIONS = [
   ".claude/CLAUDE.md",
   ".claude/skills",
@@ -32,7 +38,9 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 /** Agent instruction files for a session rooted at `projectDir`. */
 export async function sessionFiles(projectDir: string, home = homedir()): Promise<WalkedFile[]> {
   // Ignoring "**" makes the walker yield only agent instruction files (which can't be ignored).
-  const project = existsSync(projectDir) ? await walkDirectory(projectDir, ["**"]) : [];
+  const project = existsSync(projectDir)
+    ? await walkDirectory(projectDir, ["**"], { maxDirs: MAX_DIRS })
+    : [];
   const files = project.map((f) => ({ ...f, display: f.rel }));
   for (const loc of USER_LOCATIONS) {
     const abs = join(home, loc);

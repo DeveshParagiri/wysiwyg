@@ -1,11 +1,21 @@
 {
   "name": "wysiwyg",
-  "displayName": "wysiwyg — hidden prompt injection guard",
-  "version": "0.2.0",
+  "displayName": "wysiwyg \u2014 hidden prompt injection guard",
+  "version": "0.2.1",
   "description": "Flags content Claude reads but you can't see: hidden instructions in tool results (files, web pages, MCP output) and in the skills, rules and CLAUDE.md files a session loads.",
-  "author": { "name": "Devesh Paragiri", "url": "https://github.com/DeveshParagiri" },
+  "author": {
+    "name": "Devesh Paragiri",
+    "url": "https://github.com/DeveshParagiri"
+  },
   "homepage": "https://github.com/DeveshParagiri/wysiwyg#claude-code-plugin",
   "repository": "https://github.com/DeveshParagiri/wysiwyg",
   "license": "MIT",
-  "keywords": ["security", "prompt-injection", "hidden-text", "invisible-unicode", "mcp", "skills"]
+  "keywords": [
+    "security",
+    "prompt-injection",
+    "hidden-text",
+    "invisible-unicode",
+    "mcp",
+    "skills"
+  ]
 }
