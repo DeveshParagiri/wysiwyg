@@ -1,5 +1,5 @@
 import type { CheerioAPI } from "cheerio";
-import * as csstree from "css-tree";
+import * as csstree from "css-tree/dist/csstree.esm.js";
 import type { Element } from "domhandler";
 import { mediaMatches } from "./media.js";
 

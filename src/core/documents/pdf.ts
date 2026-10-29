@@ -15,6 +15,7 @@
 import { classifyIntent } from "../intent.js";
 import { concealedFinding } from "../policy.js";
 import type { Finding } from "../types.js";
+import { installDomPolyfills } from "./dom-polyfill.js";
 
 type Matrix = [number, number, number, number, number, number];
 type Box = [number, number, number, number]; // x1, y1, x2, y2 (normalized)
@@ -247,7 +248,20 @@ let pdfjsPromise: Promise<PdfJs> | null = null;
 async function loadPdfJs(): Promise<PdfJs> {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
-      const lib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      installDomPolyfills(); // before pdfjs looks for DOMMatrix (see dom-polyfill.ts)
+      // pdfjs warns at import time when the optional native canvas package is
+      // absent; we never render, so drop exactly those messages while it loads.
+      const warn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        if (!/^Warning: Cannot (load "@napi-rs\/canvas"|access the `require`|polyfill)/.test(String(args[0])))
+          warn(...args);
+      };
+      let lib: PdfJs;
+      try {
+        lib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      } finally {
+        console.warn = warn;
+      }
       // Run the worker in-process: no Worker/DOM needed, and it bundles into
       // `bun build --compile` because the specifier is static.
       const g = globalThis as { pdfjsWorker?: unknown };
