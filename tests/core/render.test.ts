@@ -72,9 +72,9 @@ describe("render: benign controls keep their visible text", () => {
   test("legitimate invisible characters survive: flags, emoji ZWJ, presentation selectors, joiners", async () => {
     const byId = (id: string) => render(all.find((c) => c.id === id)!);
     expect((await byId("N01")).text).toContain("🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}");
-    expect((await byId("N02")).text).toContain("👩‍💻");
+    expect((await byId("N02")).text).toContain("👩\u200d💻");
     expect((await byId("N02")).text).toContain("❤️");
-    expect((await byId("N03")).text).toContain("می‌خواهم");
+    expect((await byId("N03")).text).toContain("می\u200cخواهم");
   });
 });
 
@@ -88,7 +88,7 @@ describe("render: plain text", () => {
     expect(txt("one\r\ntwo\r\n")).toBe("one\ntwo");
   });
   test("strips zero-width, tag and private-use characters", () => {
-    expect(txt("pay​me⁠ now\n")).toBe("payme now");
+    expect(txt("pay\u200bme\u2060 now\ue000\n")).toBe("payme now");
   });
   test("ANSI colours are rendered, not printed", () => {
     expect(txt("\x1b[31mred\x1b[0m and plain\n")).toBe("red and plain");
@@ -101,7 +101,7 @@ describe("render: plain text", () => {
     expect(txt(`Visible.\n${"\n".repeat(80)}hidden tail\n`)).toBe("Visible.");
   });
   test("a right-to-left override shows its span reversed", () => {
-    expect(txt("file‮gnp.exe‬ done\n")).toBe("fileexe.png done");
+    expect(txt("file\u202egnp.exe\u202c done\n")).toBe("fileexe.png done");
   });
   test("NUL bytes are dropped and reported", () => {
     const r = renderVisibleText("# Notes\n\nUse\0 tabs everywhere in this project.\n", { path: "notes.txt" });

@@ -90,7 +90,10 @@ export function renderVisibleText(content: string, opts: RenderOptions): Rendere
   );
 
   // 1. Bytes no viewer shows; a leading BOM; CRLF. A bare CR is a terminal overwrite (as for the scanner).
-  let src = content.replace(/\0/g, "").replace(/^﻿/, "").replace(/\r\n/g, "\n");
+  let src = content
+    .replace(/\0/g, "")
+    .replace(/^\ufeff/, "")
+    .replace(/\r\n/g, "\n");
 
   // 2. Terminal control sequences, rendered on the raw source (a reader who `cat`s it sees the screen).
   if (hasTerminalControls(src)) {
@@ -145,7 +148,9 @@ function cutOffscreen(text: string): string {
   for (const f of scanLayout(text)) {
     if (!f.line) continue;
     if (f.ruleId === "layout/horizontal-padding" && f.column) {
-      lines[f.line - 1] = lines[f.line - 1].slice(0, f.column - 1).replace(/[\s  - 　]+$/, "");
+      lines[f.line - 1] = lines[f.line - 1]
+        .slice(0, f.column - 1)
+        .replace(/[\s\u00a0\u2000-\u200a\u3000]+$/, "");
     } else if (f.ruleId === "layout/vertical-padding") {
       end = Math.min(end, f.line - 1);
     }
@@ -172,7 +177,7 @@ const isSkinTone = (cp: number) => cp >= 0x1f3fb && cp <= 0x1f3ff;
  */
 export function stripHidden(text: string): string {
   if (!/[^\x20-\x7e\t\n]/.test(text)) return text;
-  if (text.includes("‮")) text = text.split("\n").map(applyOverride).join("\n");
+  if (text.includes("\u202e")) text = text.split("\n").map(applyOverride).join("\n");
   return text.replace(HIDDEN_RUN, (run: string, offset: number) => keepLegitimate(run, text, offset));
 }
 

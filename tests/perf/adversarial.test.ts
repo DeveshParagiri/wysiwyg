@@ -26,7 +26,7 @@ describe("adversarial inputs", () => {
     "Downloading 10%\rDownloading 55%\rDownloading 100%\n".repeat(40_000),
   );
   timed("cursor movement without newlines", "out.txt", "x\x1b[1Ay\x1b[2K".repeat(150_000));
-  timed("alternating zero-width characters", "notes.txt", "a​b‌".repeat(300_000));
+  timed("alternating zero-width characters", "notes.txt", "a\u200bb\u200c".repeat(300_000));
   timed("long variation-selector run", "notes.txt", `a${"︁".repeat(500_000)}`);
   timed("Unicode Tags run", "notes.txt", "\u{e0041}".repeat(300_000));
   timed(
