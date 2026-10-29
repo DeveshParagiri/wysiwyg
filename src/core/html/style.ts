@@ -1,6 +1,7 @@
 import type { CheerioAPI } from "cheerio";
 import * as csstree from "css-tree/dist/csstree.esm";
 import type { Element } from "domhandler";
+import { descendants } from "./dom.js";
 import { mediaMatches } from "./media.js";
 
 /**
@@ -90,6 +91,58 @@ export function parseDeclarations(css: string): { prop: string; value: string; i
   }
 }
 
+/** Elements by id, class and tag, built once per document. */
+interface ElementIndex {
+  byId: Map<string, Element[]>;
+  byClass: Map<string, Element[]>;
+  byTag: Map<string, Element[]>;
+}
+
+function buildIndex($: CheerioAPI): ElementIndex {
+  const index: ElementIndex = { byId: new Map(), byClass: new Map(), byTag: new Map() };
+  const push = (map: Map<string, Element[]>, key: string, el: Element) => {
+    const list = map.get(key);
+    if (list) list.push(el);
+    else map.set(key, [el]);
+  };
+  for (const node of descendants($.root()[0])) {
+    if (node.type !== "tag" && node.type !== "script" && node.type !== "style") continue;
+    const el = node as Element;
+    push(index.byTag, el.tagName.toLowerCase(), el);
+    if (el.attribs?.id) push(index.byId, el.attribs.id, el);
+    for (const c of el.attribs?.class?.split(/\s+/) ?? []) if (c) push(index.byClass, c, el);
+  }
+  return index;
+}
+
+const SIMPLE_SELECTOR = /^([a-zA-Z][\w-]*)?((?:[#.][\w-]+)*)$/;
+
+/**
+ * Match a compound selector made only of a tag, ids and classes (`p`, `.note`,
+ * `div#x.a.b`) from the index. Running a full selector query per stylesheet
+ * rule is O(rules × elements) — a page with thousands of rules and elements
+ * took seconds. Anything more complex returns null and goes through cheerio.
+ */
+function matchSimple(sel: string, index: ElementIndex): Element[] | null {
+  const m = SIMPLE_SELECTOR.exec(sel);
+  if (!m || !sel) return null;
+  const tag = m[1]?.toLowerCase();
+  const parts = m[2].match(/[#.][\w-]+/g) ?? [];
+  const ids = parts.filter((p) => p[0] === "#").map((p) => p.slice(1));
+  const classes = parts.filter((p) => p[0] === ".").map((p) => p.slice(1));
+  const candidates = ids.length
+    ? index.byId.get(ids[0])
+    : classes.length
+      ? index.byClass.get(classes[0])
+      : index.byTag.get(tag!);
+  return (candidates ?? []).filter((el) => {
+    if (tag && el.tagName.toLowerCase() !== tag) return false;
+    if (!ids.every((id) => el.attribs?.id === id)) return false;
+    const own = el.attribs?.class?.split(/\s+/) ?? [];
+    return classes.every((c) => own.includes(c));
+  });
+}
+
 /** Resolve declared styles for every element in the document. */
 export function computeDeclaredStyles($: CheerioAPI): Map<Element, StyleMap> {
   const decls = new Map<Element, Decl[]>();
@@ -101,6 +154,7 @@ export function computeDeclaredStyles($: CheerioAPI): Map<Element, StyleMap> {
   };
 
   let order = 0;
+  let index: ElementIndex | undefined;
   $("style").each((_i, styleEl) => {
     const css = $(styleEl).text();
     let ast: csstree.CssNode;
@@ -135,17 +189,20 @@ export function computeDeclaredStyles($: CheerioAPI): Map<Element, StyleMap> {
           // interaction states are not the default rendering.
           if (/::|:(before|after|hover|focus|active|visited|focus-within|focus-visible|target)\b/i.test(sel))
             continue;
-          let matched: ReturnType<CheerioAPI>;
-          try {
-            matched = $(sel);
-          } catch {
-            continue;
+          index ??= buildIndex($);
+          let matched: Element[] | null = matchSimple(sel, index);
+          if (!matched) {
+            try {
+              matched = $(sel).toArray() as Element[];
+            } catch {
+              continue;
+            }
           }
           const [ids, classes, types] = specificity(sel);
           order++;
-          matched.each((_j, el) => {
-            for (const d of ruleDecls) add(el as Element, { ...d, weight: [0, ids, classes, types, order] });
-          });
+          for (const el of matched) {
+            for (const d of ruleDecls) add(el, { ...d, weight: [0, ids, classes, types, order] });
+          }
         }
       },
     });

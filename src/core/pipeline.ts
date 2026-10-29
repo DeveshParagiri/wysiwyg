@@ -22,6 +22,9 @@ export type DocKind = "text" | "markdown" | "html" | "svg" | "pdf" | "ooxml" | "
 const MARKDOWN_EXT = /\.(md|mdx|markdown|mdown|mkd|mkdn|mdc)$/i;
 const HTML_EXT = /\.(html?|xhtml|shtml)$/i;
 const OOXML_EXT = /\.(docx|docm|dotx|pptx|pptm|potx|xlsx|xlsm|xltx)$/i;
+/** Source code and bundles (escape sequences there are usually string literals). */
+const CODE_EXT =
+  /\.(m?[jt]sx?|cjs|cts|mts|py|rb|go|rs|java|kts?|c|cc|cpp|h|hpp|cs|php|swift|sh|bash|zsh|ps1|lua|pl|r|scala|dart|map)$/i;
 const BINARY_EXT =
   /\.(png|jpe?g|gif|webp|avif|ico|icns|bmp|tiff?|psd|heic|mp[34]|m4a|mov|avi|mkv|webm|wav|ogg|flac|aac|zip|gz|tgz|bz2|xz|zst|7z|rar|jar|war|ear|class|so|dylib|dll|exe|bin|o|a|lib|obj|woff2?|ttf|otf|eot|wasm|pyc|pyo|lockb|sqlite3?|db|parquet|arrow|npy|npz|pt|pth|onnx|safetensors|ckpt|h5|pkl|DS_Store)$/i;
 
@@ -105,7 +108,7 @@ export function scanText(content: string, opts: ScanOptions): Finding[] {
 
   const textOpts = { instructionFile };
   findings.push(...scanUnicode(content, { instructionFile, expectedScripts: opts.expectedScripts }));
-  findings.push(...scanTerminal(content, textOpts));
+  findings.push(...scanTerminal(content, { ...textOpts, codeFile: CODE_EXT.test(opts.path) }));
   findings.push(...scanLayout(content, textOpts));
   findings.push(...scanEncoded(content, textOpts));
 

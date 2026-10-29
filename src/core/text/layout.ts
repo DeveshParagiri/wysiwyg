@@ -38,6 +38,8 @@ export function scanLayout(content: string, opts: { instructionFile?: boolean } 
       pos = m.index;
       const width = columnsOf(m[0], col);
       if (width < MIN_PADDING_COLUMNS) continue;
+      // Formatter-aligned Markdown table columns: the padding sits before the next cell border
+      if (/^\s*\|/.test(text) && text[m.index + m[0].length] === "|") continue;
       const before = (m.index > 120 ? "…" : "") + text.slice(Math.max(0, m.index - 120), m.index);
       const after = text.slice(m.index + m[0].length, m.index + m[0].length + 2000);
       findings.push(

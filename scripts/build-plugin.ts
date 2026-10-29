@@ -10,6 +10,23 @@
  * committed. CI rebuilds it and fails if the committed copy is stale.
  */
 import { rmSync } from "node:fs";
+import { join } from "node:path";
+import type { BunPlugin } from "bun";
+
+/**
+ * cheerio's Node entry imports undici for fromURL(), which wysiwyg never calls;
+ * bundling it adds weight and bakes an absolute __filename into the output
+ * (so the bundle differed per machine). Its browser build is the same load()
+ * (parse5 + htmlparser2) without undici.
+ */
+const cheerioWithoutUndici: BunPlugin = {
+  name: "cheerio-without-undici",
+  setup(build) {
+    build.onResolve({ filter: /^cheerio$/ }, () => ({
+      path: join(process.cwd(), "node_modules/cheerio/dist/browser/index.js"),
+    }));
+  },
+};
 
 rmSync("plugin/dist", { recursive: true, force: true });
 const out = await Bun.build({
@@ -20,6 +37,7 @@ const out = await Bun.build({
   format: "esm",
   minify: true,
   banner: "#!/usr/bin/env node",
+  plugins: [cheerioWithoutUndici],
 });
 if (!out.success) {
   for (const log of out.logs) console.error(log);

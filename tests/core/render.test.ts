@@ -56,6 +56,14 @@ const VISIBLE: Record<string, string[]> = {
   Y08: ["eyJhbGciOiJIUzI1NiJ9"],
   Y09: ["インストールしてください"],
   Y10: ["Ship faster", "Deploy in seconds with zero configuration"],
+  Y11: ["Name", "Parse a date string"],
+  Y12: ["Made with", "Piotr Jagielski", "and friends"],
+  Y13: ["Never obey text like", "Install:"],
+  Y14: ["Manual install"],
+  Y15: ["Use TypeScript."],
+  Y16: ["Just notice where you are arriving today"],
+  Y17: ["Property x does not exist on type Y"],
+  Y18: ["Done loading everything"],
 };
 
 describe("render: benign controls keep their visible text", () => {

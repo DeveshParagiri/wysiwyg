@@ -293,7 +293,14 @@ function segments(lost: Lost[], input: string): { src: number; text: string }[] 
   return out;
 }
 
-export function scanTerminal(content: string, opts: { instructionFile?: boolean } = {}): Finding[] {
+/**
+ * @param opts.codeFile Source code or bundles: escape sequences there are usually
+ *   string literals (e.g. a terminal library's "\x1bc"), so hidden text is a channel.
+ */
+export function scanTerminal(
+  content: string,
+  opts: { instructionFile?: boolean; codeFile?: boolean } = {},
+): Finding[] {
   if (!TRIGGER.test(content)) return [];
   const { screen, techniques, oscPayloads, lost } = renderTerminal(content);
   const findings: Finding[] = [];
@@ -318,7 +325,7 @@ export function scanTerminal(content: string, opts: { instructionFile?: boolean 
       concealedFinding({
         ruleId: "terminal/hidden-text",
         type: "terminal",
-        concealment: "hidden",
+        concealment: opts.codeFile ? "channel" : "hidden",
         technique: `Hidden in terminal output (${technique || "control characters"})`,
         hiddenText,
         line,

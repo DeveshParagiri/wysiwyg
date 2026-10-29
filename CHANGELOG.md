@@ -17,6 +17,8 @@ A rewrite around one idea: compute what a human sees and what an agent reads, fo
 - **MCP:** `wysiwyg mcp` scans server metadata, over stdio or Streamable HTTP.
 - **Severity:** concealment × intent. Hidden instructions are critical, hidden prose is a warning, hidden UI chrome is info.
 
+- **Calibrated on about 6,500 real files** (READMEs, agent instruction files, docs sites, PDFs, Office documents). False alarms dropped from 114 of 187 alarms to none of 71.
+
 ### Ways to use it
 - Claude Code plugin with PostToolUse and SessionStart hooks, and a `scan` skill.
 - GitHub Action with PR diff scanning and SARIF upload.

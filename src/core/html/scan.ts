@@ -46,7 +46,9 @@ interface State {
   opacity: number;
   fontPx: number;
   color: RGBA;
-  background: RGBA | null; // null = unknown (image/gradient)
+  /** False when the text colour can't be resolved (e.g. var(--x)): skip colour checks. */
+  colorKnown: boolean;
+  background: RGBA | null; // null = unknown (image/gradient/var())
   svg: boolean;
   /** Whitespace is preserved (<pre>, white-space:pre*). */
   pre: boolean;
@@ -138,6 +140,8 @@ const NEVER_RENDERED = new Set(["datalist", "param", "source", "track", "area", 
 const CODE = new Set(["script", "style"]);
 /** Document head: <title> shows in the tab; <meta> is handled as a channel. */
 const HEAD = new Set(["head", "title"]);
+/** Channels whose text describes something the reader can see (image, tooltip, control). */
+const DESCRIBES_VISIBLE = new Set(["alt-text", "title-attribute", "aria-label", "meta"]);
 /** Elements handled as channels instead of by the walk. */
 const CHANNEL_ELEMENTS = new Set(["template", "noscript", "desc", "metadata"]);
 
@@ -315,10 +319,14 @@ function projectHtml(html: string, opts: HtmlScanOptions): Projection {
     }
     const colorProp = next.svg ? s.get("fill") : (s.get("-webkit-text-fill-color") ?? s.get("color"));
     if (colorProp) {
-      if (/^none$/i.test(colorProp)) next.color = { ...BLACK, a: 0 };
-      else {
+      if (/^none$/i.test(colorProp)) {
+        next.color = { ...BLACK, a: 0 };
+        next.colorKnown = true;
+      } else if (!/^(inherit|currentcolor|unset|initial|revert)$/i.test(colorProp.trim())) {
+        // Custom properties and other unresolvable values make the colour unknown, not black
         const c = parseColor(colorProp);
         if (c) next.color = c;
+        next.colorKnown = c !== null;
       }
     }
     const fo = num(s.get("fill-opacity"));
@@ -330,6 +338,7 @@ function projectHtml(html: string, opts: HtmlScanOptions): Projection {
     if (bgc && !hasImage) {
       const c = parseColor(bgc);
       if (c && c.a > 0.5) next.background = { ...c, a: 1 };
+      else if (!c && !/^(transparent|inherit|initial|unset|none)$/i.test(bgc.trim())) next.background = null;
     }
 
     if (!state.hiddenBy && tag) {
@@ -391,14 +400,14 @@ function projectHtml(html: string, opts: HtmlScanOptions): Projection {
       return { el, technique: `opacity:${+state.opacity.toFixed(3)}`, toggleable: false, srOnly: false };
     if (state.fontPx <= 2)
       return { el, technique: `font-size:${+state.fontPx.toFixed(2)}px`, toggleable: false, srOnly: false };
-    if (state.color.a <= 0.05)
+    if (state.colorKnown && state.color.a <= 0.05)
       return {
         el,
         technique: state.svg ? "transparent fill" : "transparent text color",
         toggleable: false,
         srOnly: false,
       };
-    if (state.background) {
+    if (state.background && state.colorKnown) {
       const ratio = contrastRatio(state.color, state.background);
       if (ratio < LOW_CONTRAST_THRESHOLD) {
         return {
@@ -418,6 +427,7 @@ function projectHtml(html: string, opts: HtmlScanOptions): Projection {
     opacity: 1,
     fontPx: 16,
     color: BLACK,
+    colorKnown: true,
     background: opts.xml ? null : WHITE,
     svg: Boolean(opts.xml),
     pre: false,
@@ -492,8 +502,7 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
           ?.startOffset ?? (node as Element).startIndex;
       if (typeof loc === "number" && loc >= 0) return idx.lineOf(loc);
     }
-    const probe = text.replace(/\s+/g, " ").trim().slice(0, 40);
-    return idx.find(probe) ?? idx.find(probe.split(" ").slice(0, 3).join(" "));
+    return idx.findText(text);
   };
 
   for (const g of groups.values()) {
@@ -508,6 +517,9 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
         ? `Hidden until revealed by script (${g.technique})`
         : `Hidden text (${g.technique}${describeEl(g.root)})`;
     const context = blockContext(g.root, groups);
+    // A hidden copy of text that is visible right beside it (e.g. a highlight layer,
+    // an error message rendered twice) gives the agent nothing the human lacks.
+    if (hiddenText.length >= 3 && context.human.includes(hiddenText)) continue;
     findings.push(
       concealedFinding({
         ruleId: `${prefix}/hidden-text`,
@@ -539,6 +551,7 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
         humanView: "",
         agentView: t,
         instructionFile: opts.instructionFile,
+        describesVisible: DESCRIBES_VISIBLE.has(ruleId),
       }),
     );
   };

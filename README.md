@@ -219,6 +219,12 @@ Severity depends on two things: how the content is hidden, and what the hidden t
 
 "Addresses the AI" covers overriding instructions, running commands, exfiltrating secrets, hiding actions from the user, and manipulating rankings or reviews. In agent instruction files, hidden prose in everyday places is raised to a warning. This is why a real website's hidden menus and cookie banners stay quiet, while a hidden "ignore previous instructions" does not.
 
+## Accuracy
+
+- **Red-team corpus:** 61 hiding techniques, each with an attack payload and a harmless one, plus 15 benign controls. All attacks are detected and every control stays clean.
+- **Held-out set:** 39 cases written after the engine, including real-world false-alarm patterns. All pass.
+- **Real content:** about 6,500 files, covering popular READMEs in 34 languages, about 1,700 agent instruction files (CLAUDE.md, AGENTS.md, skills, Cursor and Copilot rules), MDN, Docusaurus, VitePress and Sphinx docs, rendered websites, papers and reports, and Office samples. The scan raised 71 alarms (warning or critical). All 71 are content that really is hidden, and none of it is an attack. Most come from one PDF repeating a white-on-white running title on every page.
+
 ## Configuration
 
 `.wysiwygrc` (YAML) in the project or home directory:

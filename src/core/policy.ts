@@ -44,17 +44,40 @@ export interface ConcealedInput {
   agentView?: string;
   detail?: string;
   instructionFile?: boolean;
+  /**
+   * Text that describes something the reader can see (alt text, a tooltip, an
+   * aria label). Not raised just because it sits in an agent instruction file.
+   */
+  describesVisible?: boolean;
+}
+
+/** Build a Finding for concealed content, deriving intent and severity. */
+/**
+ * Replace lone surrogates (from truncating text mid-emoji) with U+FFFD, so
+ * findings serialize to JSON that every parser accepts.
+ */
+export function wellFormed(s: string): string;
+export function wellFormed(s: string | undefined): string | undefined;
+export function wellFormed(s: string | undefined): string | undefined {
+  return s?.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "\ufffd");
 }
 
 /** Build a Finding for concealed content, deriving intent and severity. */
 export function concealedFinding(input: ConcealedInput): Finding {
-  const hidden = input.hiddenText.replace(/\s+/g, " ").trim();
+  const hidden = wellFormed(input.hiddenText.replace(/\s+/g, " ").trim());
   const intent = classifyIntent(hidden);
-  const severity = severityFor(input.concealment, intent.level, {
-    instructionFile: input.instructionFile,
+  // A shell command in a comment or collapsed section is documentation; it only
+  // counts as an instruction to the agent when the text is actually hidden.
+  const level =
+    intent.level === "instruction" && intent.kind === "command" && input.concealment === "channel"
+      ? "prose"
+      : intent.level;
+  const severity = severityFor(input.concealment, level, {
+    instructionFile: input.instructionFile && !input.describesVisible,
   });
-  const preview = hidden.length > PREVIEW_SHORT ? `${hidden.slice(0, PREVIEW_SHORT - 1)}…` : hidden;
-  const why = intent.level === "instruction" ? ` — agent-directed ("${intent.match}")` : "";
+  const preview =
+    hidden.length > PREVIEW_SHORT ? `${[...hidden].slice(0, PREVIEW_SHORT - 1).join("")}…` : hidden;
+  const why = level === "instruction" ? ` — agent-directed ("${intent.match}")` : "";
   return {
     ruleId: input.ruleId,
     type: input.type,
@@ -62,15 +85,15 @@ export function concealedFinding(input: ConcealedInput): Finding {
     line: input.line,
     column: input.column,
     offset: input.offset,
-    location: input.location,
-    message: `${input.technique}: "${preview}"${why}`,
+    location: wellFormed(input.location),
+    message: wellFormed(`${input.technique}: "${preview}"${why}`),
     hiddenText: hidden,
-    intent: intent.level,
-    technique: input.technique,
-    trigger: intent.match,
-    humanView: input.humanView ?? "",
-    agentView: input.agentView ?? hidden,
-    detail: input.detail,
+    intent: level,
+    technique: wellFormed(input.technique),
+    trigger: level === "instruction" ? intent.match : undefined,
+    humanView: wellFormed(input.humanView ?? ""),
+    agentView: wellFormed(input.agentView ?? hidden),
+    detail: wellFormed(input.detail),
   };
 }
 

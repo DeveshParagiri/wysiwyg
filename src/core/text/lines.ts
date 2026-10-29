@@ -43,6 +43,20 @@ export class LineIndex {
     return out;
   }
 
+  /**
+   * Line where normalised text (whitespace collapsed, e.g. a hidden element's
+   * text) starts in the source: its first words, allowing any whitespace or
+   * Markdown emphasis between them. Short texts return undefined rather than
+   * risk matching an unrelated earlier occurrence.
+   */
+  findText(text: string, minLength = 6): number | undefined {
+    const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 8);
+    if (words.join(" ").length < minLength) return undefined;
+    const escape = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const m = new RegExp(words.map(escape).join("(?:\\s|[*_`~>])+")).exec(this.content);
+    return m ? this.lineOf(m.index) : undefined;
+  }
+
   /** First line containing `needle` (searching from `from`), or undefined. */
   find(needle: string, from = 0): number | undefined {
     if (!needle) return undefined;

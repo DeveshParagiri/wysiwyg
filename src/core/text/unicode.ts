@@ -284,6 +284,8 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
         raise("warning", "unicode/tags", "unicode_tags", cp); // tag chars with no printable payload
       } else if (isVS(cp)) {
         // Presentation selectors after emoji, keycaps, CJK ideographic variation sequences: normal.
+        // Repeated text/emoji presentation selectors (❤️️) are an editing artifact, not a payload.
+        if (cp >= 0xfe0e && vs.every((v) => v >= 0xfe0e && v <= 0xfe0f)) continue;
         if (
           vs.length === 1 &&
           (cp >= 0xfe0e ||
@@ -308,6 +310,7 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
         cps.length <= 2 &&
         NO_SPACE_SCRIPTS.has(getDominantScript(content, run.start))
       ) {
+      } else if (cp === 0x200b && cps.length === 1 && content.startsWith("```", run.end)) {
       } else if (cp === 0xfeff && run.start === 0) {
       } else if (cp === 0x00ad && cps.length === 1 && /\p{L}/u.test(run.prev) && /\p{L}/u.test(run.next)) {
       } else if (isBidiMark(cp) || isBidiIsolate(cp)) {
@@ -344,7 +347,9 @@ export function scanUnicode(content: string, opts: UnicodeScanOptions = {}): Fin
       flagged.length <= 2 &&
       !opts.instructionFile &&
       severity === "warning" &&
-      (ruleId === "unicode/invisible" || ruleId === "unicode/zero-width")
+      (ruleId === "unicode/invisible" ||
+        ruleId === "unicode/zero-width" ||
+        (ruleId === "unicode/bidi" && flagged.every(isBidiMark))) // marks in names, not isolates
     ) {
       severity = "info";
     }

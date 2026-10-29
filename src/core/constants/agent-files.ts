@@ -76,7 +76,8 @@ export function isAgentInstructionFile(filePath: string): boolean {
   const p = filePath.replace(/\\/g, "/");
   const base = p.slice(p.lastIndexOf("/") + 1);
   if (BASENAMES.has(base)) return true;
-  if (SUFFIXES.some((s) => base.endsWith(s))) return true;
+  // README.instructions.md and friends are index pages, not instructions
+  if (SUFFIXES.some((s) => base.endsWith(s)) && !/^readme\./i.test(base)) return true;
   for (const exact of PATHS) {
     if (p === exact || p.endsWith(`/${exact}`)) return true;
   }

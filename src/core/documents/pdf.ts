@@ -27,6 +27,7 @@ type Technique =
   | "off-page"
   | "clipped"
   | "covered"
+  | "covered-soft"
   | "background-match"
   | "tiny"
   | "ocr-layer";
@@ -63,6 +64,13 @@ const TECH: Record<Technique, TechInfo> = {
     ruleId: "pdf/covered-text",
     label: "PDF text covered by an opaque shape drawn on top",
     concealment: "hidden",
+  },
+  // Under an image or a curved/irregular shape: transparency (soft masks) and the
+  // true outline aren't checked, so this is a channel rather than proof of hiding.
+  "covered-soft": {
+    ruleId: "pdf/covered-text",
+    label: "PDF text under an image or shape (opacity not verified)",
+    concealment: "channel",
   },
   "background-match": {
     ruleId: "pdf/white-text",
@@ -186,6 +194,8 @@ interface Region {
   image: boolean;
   /** Inner subpaths of a compound path (frames, rings): treated as unpainted. */
   holes?: Box[];
+  /** Axis-aligned rectangle(s): the bounding box is the painted area. */
+  rect: boolean;
 }
 
 function inRegion(r: Region, x: number, y: number): boolean {
@@ -193,6 +203,47 @@ function inRegion(r: Region, x: number, y: number): boolean {
 }
 
 /** Bounding boxes (path space) of each subpath in pdfjs's packed path data. */
+/**
+ * True when a constructPath's data draws only axis-aligned rectangles: no curve
+ * segments, and every point on a corner of its subpath's bounding box.
+ */
+function isRectangularPath(data: unknown): boolean {
+  const arrays: ArrayLike<number>[] = [];
+  const collect = (v: unknown) => {
+    if (ArrayBuffer.isView(v)) arrays.push(v as unknown as ArrayLike<number>);
+    else if (Array.isArray(v)) {
+      if (v.every((x) => typeof x === "number")) arrays.push(v as number[]);
+      else v.forEach(collect);
+    }
+  };
+  collect(data);
+  if (!arrays.length) return false;
+  const subpaths: number[][][] = [];
+  for (const d of arrays) {
+    for (let k = 0; k < d.length; ) {
+      const op = d[k];
+      if (op === 2 || op === 3) return false; // curves
+      const n = op === 0 || op === 1 ? 2 : op === 4 ? 0 : -1;
+      if (n < 0) return false;
+      if (op === 0 || !subpaths.length) subpaths.push([]);
+      if (n) subpaths[subpaths.length - 1].push([d[k + 1], d[k + 2]]);
+      k += 1 + n;
+    }
+  }
+  const eps = 0.01;
+  return subpaths.every((pts) => {
+    if (!pts.length) return true;
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    return pts.every(
+      ([x, y]) =>
+        (Math.abs(x - x0) < eps || Math.abs(x - x1) < eps) &&
+        (Math.abs(y - y0) < eps || Math.abs(y - y1) < eps),
+    );
+  });
+}
+
 function subpathBoxes(data: unknown): Box[] {
   const arrays: ArrayLike<number>[] = [];
   const collect = (v: unknown) => {
@@ -429,6 +480,7 @@ async function pageRuns(
     alpha: number,
     image: boolean,
     holes?: Box[],
+    rect = !image,
   ) => {
     if (annotDepth > 0 || alpha <= 0.05) return;
     const b = gs.clip ? intersect(box, gs.clip) : box;
@@ -440,6 +492,7 @@ async function pageRuns(
       opaque: alpha >= 0.95,
       image,
       holes: holes?.length ? holes : undefined,
+      rect,
     });
   };
 
@@ -685,6 +738,7 @@ async function pageRuns(
             ? boxOf(gs.ctm, mm[0], mm[1], mm[2], mm[3])
             : null;
         if (box) {
+          const rect = isRectangularPath(a[1]);
           const fills =
             op === OPS.fill ||
             op === OPS.eoFill ||
@@ -700,10 +754,10 @@ async function pageRuns(
               const nested = (s: Box) => subs.some((o) => o !== s && contains(o, s, 0) && area(o) > area(s));
               for (const outer of subs.filter((s) => !nested(s))) {
                 const holes = subs.filter((s) => s !== outer && contains(outer, s, 0));
-                addRegion(i, outer, gs.fill, gs.fillAlpha, false, holes);
+                addRegion(i, outer, gs.fill, gs.fillAlpha, false, holes, rect);
               }
             } else {
-              addRegion(i, box, gs.fill, gs.fillAlpha, false);
+              addRegion(i, box, gs.fill, gs.fillAlpha, false, undefined, rect);
             }
           }
         }
@@ -809,7 +863,7 @@ async function pageRuns(
         run.tech = "ocr-layer";
         run.detail = "text drawn under a page-sized image";
       } else if (run.tech === null) {
-        run.tech = "covered";
+        run.tech = cover.image || !cover.rect ? "covered-soft" : "covered";
         run.detail = `covered by ${cover.image ? "an image" : `a ${hex(cover.color)} filled shape`} at [${cover.box.map((v) => v.toFixed(0)).join(" ")}]`;
       }
     }

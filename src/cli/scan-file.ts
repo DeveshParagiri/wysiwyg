@@ -17,6 +17,12 @@ export interface FileScanOptions {
 }
 
 const SNIFF_BYTES = 8192;
+/**
+ * PDFs and Office files keep their index at the end (xref table, zip central
+ * directory): a truncated read can't be parsed, which would let padding a file
+ * evade the scan. They are read whole, up to this hard cap.
+ */
+const CONTAINER_MAX_BYTES = 256 * 1_048_576;
 
 async function readRange(path: string, length: number): Promise<Uint8Array> {
   const handle = await open(path, "r");
@@ -42,12 +48,26 @@ export async function scanFile(file: WalkedFile, opts: FileScanOptions = {}): Pr
   // Sniff first: binaries (by extension or content) are never read in full.
   const { size } = await stat(file.path);
   const head = await readRange(file.path, Math.min(size, SNIFF_BYTES));
-  if (detectKind(file.rel, head) === "binary") return done();
-  const bytes = size <= SNIFF_BYTES ? head : await readRange(file.path, Math.min(size, maxBytes));
+  const kind = detectKind(file.rel, head);
+  if (kind === "binary") return done();
+  const container = kind === "pdf" || kind === "ooxml";
+  const limit = container ? CONTAINER_MAX_BYTES : maxBytes;
+  if (container && size > limit) {
+    findings.push({
+      ruleId: "evasion/oversized",
+      type: "scanner_evasion",
+      severity: "warning",
+      message: `Not scanned: ${(size / 1048576).toFixed(0)} MB document exceeds the ${limit / 1048576} MB parsing limit`,
+      humanView: "",
+      agentView: "",
+    });
+    return done();
+  }
+  const bytes = size <= SNIFF_BYTES ? head : await readRange(file.path, Math.min(size, limit));
 
   findings.push(...(await scanBytes(bytes, { path: file.rel, expectedScripts: opts.expectedScripts })));
 
-  if (size > maxBytes) {
+  if (!container && size > maxBytes) {
     // Not proof of anything hidden — just that we couldn't look. It matters most for
     // files agents act on, so it's a warning there and context elsewhere.
     findings.push({
