@@ -7,6 +7,7 @@ import { LineIndex } from "../text/lines.js";
 import { capPerRule } from "../text/unicode.js";
 import type { Concealment, Finding } from "../types.js";
 import { contrastRatio, parseColor, type RGBA } from "../utils/color.js";
+import { descendants } from "./dom.js";
 import { computeDeclaredStyles, type StyleMap, toPx } from "./style.js";
 
 /**
@@ -47,7 +48,86 @@ interface State {
   color: RGBA;
   background: RGBA | null; // null = unknown (image/gradient)
   svg: boolean;
+  /** Whitespace is preserved (<pre>, white-space:pre*). */
+  pre: boolean;
+  /** False for content that is not displayed but is not concealment either (SVG <title>, unselected <option>). */
+  shown: boolean;
 }
+
+/** Visible-text tokens collected by the walk (see renderHtml). */
+type Token = { t: "text"; s: string; pre: boolean } | { t: "break"; n: 1 | 2 } | { t: "cell" };
+
+/** Elements that start a new line; those in PARAGRAPH also leave a blank line. */
+const BLOCK = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "body",
+  "caption",
+  "dd",
+  "details",
+  "dialog",
+  "div",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hgroup",
+  "hr",
+  "html",
+  "li",
+  "main",
+  "menu",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "summary",
+  "table",
+  "tbody",
+  "tfoot",
+  "thead",
+  "tr",
+  "ul",
+  "legend",
+  "center",
+  "listing",
+  "plaintext",
+  "xmp",
+]);
+const PARAGRAPH = new Set([
+  "blockquote",
+  "dl",
+  "figure",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "ol",
+  "p",
+  "pre",
+  "table",
+  "ul",
+]);
+const PRE_TAGS = new Set(["pre", "textarea", "listing", "plaintext", "xmp"]);
+/** <input> types whose value or placeholder is drawn as text. */
+const TEXT_INPUT =
+  /^(text|search|email|url|tel|number|password|submit|button|reset|date|time|month|week|datetime-local)$/;
 
 const WHITE: RGBA = { r: 255, g: 255, b: 255, a: 1 };
 const BLACK: RGBA = { r: 0, g: 0, b: 0, a: 1 };
@@ -147,13 +227,31 @@ function hidingTechnique(
   return null;
 }
 
-export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
-  const prefix = opts.rulePrefix ?? (opts.xml ? "svg" : "html");
+interface HiddenGroup {
+  root: Element;
+  technique: string;
+  toggleable: boolean;
+  srOnly: boolean;
+  parts: string[];
+}
+
+interface Projection {
+  $: CheerioAPI;
+  scripted: boolean;
+  /** Hidden text, grouped by the element that hides it. */
+  groups: Map<Element, HiddenGroup>;
+  /** What a human sees, in document order. */
+  tokens: Token[];
+}
+
+/**
+ * Walk the document once with the cascade, splitting every text node into
+ * what a human perceives (tokens) and what is hidden (groups).
+ */
+function projectHtml(html: string, opts: HtmlScanOptions): Projection {
   const $: CheerioAPI = opts.xml
     ? cheerio.load(html, { xml: { xmlMode: true, withStartIndices: true } } as cheerio.CheerioOptions)
     : cheerio.load(html, { sourceCodeLocationInfo: true } as cheerio.CheerioOptions);
-  const source = opts.source ?? html;
-  const idx = new LineIndex(source);
   const styles = computeDeclaredStyles($);
 
   const scripted =
@@ -162,34 +260,25 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
       (_i, el) => !/json|template|text\/(x-)?(template|html)/i.test($(el).attr("type") ?? ""),
     ).length > 0;
 
-  const findings: Finding[] = [];
-  const lineFor = (node: AnyNode | null, text: string): number | undefined => {
-    if (!opts.source && node) {
-      const loc =
-        (node as Element & { sourceCodeLocation?: { startOffset: number } }).sourceCodeLocation
-          ?.startOffset ?? (node as Element).startIndex;
-      if (typeof loc === "number" && loc >= 0) return idx.lineOf(loc);
-    }
-    const probe = text.replace(/\s+/g, " ").trim().slice(0, 40);
-    return idx.find(probe) ?? idx.find(probe.split(" ").slice(0, 3).join(" "));
-  };
-
-  // ── Walk ──
-  interface HiddenGroup {
-    root: Element;
-    technique: string;
-    toggleable: boolean;
-    srOnly: boolean;
-    parts: string[];
-  }
   const groups = new Map<Element, HiddenGroup>();
+  const tokens: Token[] = [];
+  const notShown = new Set<Element>();
+  const emit = (s: string, state: State) => {
+    if (s && state.shown) tokens.push({ t: "text", s, pre: state.pre });
+  };
 
   const walk = (node: AnyNode, state: State) => {
     if (node.type === "text") {
       const text = (node as unknown as { data: string }).data;
-      if (!text.trim()) return;
+      if (!text.trim()) {
+        if (text && !textHidden(state)) emit(text, state); // whitespace still separates inline words
+        return;
+      }
       const reason = textHidden(state);
-      if (!reason) return;
+      if (!reason) {
+        emit(text, state);
+        return;
+      }
       const g = groups.get(reason.el) ?? {
         root: reason.el,
         technique: reason.technique,
@@ -209,6 +298,9 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
 
     const s = styles.get(el) ?? new Map();
     const next: State = { ...state, svg: state.svg || tag === "svg" };
+    if (PRE_TAGS.has(tag) || /^pre/.test(s.get("white-space") ?? "")) next.pre = true;
+    else if (/^(normal|nowrap)$/.test(s.get("white-space") ?? "")) next.pre = false;
+    if ((opts.xml && tag === "title") || notShown.has(el)) next.shown = false; // tooltip / unselected option
 
     // Inherited / cumulative properties
     const vis = s.get("visibility");
@@ -247,15 +339,47 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     // Remember the element for per-element hiding (color, size, opacity, visibility)
     (next as State & { el?: Element }).el = el;
 
+    // Line structure for the visible text
+    const display = s.get("display")?.toLowerCase();
+    const brk: 0 | 1 | 2 =
+      display === undefined
+        ? PARAGRAPH.has(tag)
+          ? 2
+          : BLOCK.has(tag) || (next.svg && tag === "text")
+            ? 1
+            : 0
+        : /^(block|flex|grid|list-item|table|table-row|flow-root|table-caption)$/.test(display)
+          ? PARAGRAPH.has(tag)
+            ? 2
+            : 1
+          : 0;
+    if (brk) tokens.push({ t: "break", n: brk });
+    if (display === "table-cell" || ((tag === "td" || tag === "th") && display === undefined))
+      tokens.push({ t: "cell" });
+    if (tag === "br") tokens.push({ t: "break", n: 1 });
+
+    // Form controls draw their value (or placeholder) as text
+    if (tag === "input" && TEXT_INPUT.test((el.attribs?.type ?? "text").toLowerCase())) {
+      const shown = el.attribs?.value || el.attribs?.placeholder;
+      if (shown && !textHidden({ ...next, el } as State & { el?: Element })) emit(` ${shown} `, next);
+    }
+
     // Closed <details>: everything except the summary is a channel
     if (tag === "details" && el.attribs?.open === undefined) {
       for (const child of el.children) {
         if (child.type === "tag" && (child as Element).tagName?.toLowerCase() === "summary")
           walk(child, next);
       }
-      return;
+    } else {
+      if (tag === "select" && el.attribs?.multiple === undefined) {
+        // A closed drop-down shows only its selected option (or the first)
+        const options = $(el).find("option").toArray() as Element[];
+        const chosen = options.find((o) => o.attribs?.selected !== undefined) ?? options[0];
+        for (const o of options) if (o !== chosen) notShown.add(o);
+      }
+      for (const child of el.children ?? []) walk(child, next);
     }
-    for (const child of el.children ?? []) walk(child, next);
+    if (brk) tokens.push({ t: "break", n: brk });
   };
 
   const textHidden = (state: State & { el?: Element }) => {
@@ -296,8 +420,81 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     color: BLACK,
     background: opts.xml ? null : WHITE,
     svg: Boolean(opts.xml),
+    pre: false,
+    shown: true,
   };
   walk($.root()[0] as AnyNode, rootState);
+  return { $, scripted, groups, tokens };
+}
+
+/**
+ * The text a human sees once the page is rendered: hidden text, channels
+ * (comments, alt/title/aria, meta, templates, collapsed <details>) and
+ * screen-reader-only text are left out; block elements start new lines,
+ * table cells are tab-separated, whitespace collapses outside <pre>.
+ */
+export function renderHtml(html: string, opts: HtmlScanOptions = {}): string {
+  return tokensToText(projectHtml(html, opts).tokens);
+}
+
+function tokensToText(tokens: Token[]): string {
+  const out: string[] = [];
+  let last = "\n"; // last character written ("\n" = at a line start)
+  let pendingBreak = 0;
+  let pendingCell = false;
+  for (const tok of tokens) {
+    if (tok.t === "break") {
+      if (out.length) pendingBreak = Math.max(pendingBreak, tok.n);
+      pendingCell = false;
+      continue;
+    }
+    if (tok.t === "cell") {
+      pendingCell = pendingBreak === 0 && last !== "\n";
+      continue;
+    }
+    let text = tok.pre ? tok.s : tok.s.replace(/[ \t\n\r\f]+/g, " ");
+    if (!tok.pre && (pendingBreak > 0 || last === "\n" || last === " " || last === "\t"))
+      text = text.replace(/^ /, "");
+    if (!text) continue;
+    if (pendingBreak) {
+      out.push("\n".repeat(pendingBreak));
+      last = "\n";
+      pendingBreak = 0;
+      pendingCell = false;
+    }
+    if (pendingCell) {
+      out.push("\t");
+      pendingCell = false;
+    }
+    out.push(text);
+    last = text[text.length - 1];
+  }
+  return out
+    .join("")
+    .replace(/ +\t/g, "\t")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+$/, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+|\s+$/g, "");
+}
+
+export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
+  const prefix = opts.rulePrefix ?? (opts.xml ? "svg" : "html");
+  const { $, scripted, groups } = projectHtml(html, opts);
+  const source = opts.source ?? html;
+  const idx = new LineIndex(source);
+  const findings: Finding[] = [];
+  const lineFor = (node: AnyNode | null, text: string): number | undefined => {
+    if (!opts.source && node) {
+      const loc =
+        (node as Element & { sourceCodeLocation?: { startOffset: number } }).sourceCodeLocation
+          ?.startOffset ?? (node as Element).startIndex;
+      if (typeof loc === "number" && loc >= 0) return idx.lineOf(loc);
+    }
+    const probe = text.replace(/\s+/g, " ").trim().slice(0, 40);
+    return idx.find(probe) ?? idx.find(probe.split(" ").slice(0, 3).join(" "));
+  };
 
   for (const g of groups.values()) {
     const hiddenText = g.parts.join(" ").replace(/\s+/g, " ").trim();
@@ -346,18 +543,10 @@ export function scanHtml(html: string, opts: HtmlScanOptions = {}): Finding[] {
     );
   };
 
-  $("*")
-    .contents()
-    .each((_i, node) => {
-      if (node.type === "comment")
-        channel("comment", "HTML comment", (node as unknown as { data: string }).data, node);
-    });
-  $.root()
-    .contents()
-    .each((_i, node) => {
-      if (node.type === "comment")
-        channel("comment", "HTML comment", (node as unknown as { data: string }).data, node);
-    });
+  for (const node of descendants($.root()[0])) {
+    if (node.type === "comment")
+      channel("comment", "HTML comment", (node as unknown as { data: string }).data, node);
+  }
   $("template").each((_i, el) =>
     channel(
       "template",

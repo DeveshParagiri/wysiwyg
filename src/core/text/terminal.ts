@@ -17,13 +17,15 @@ import { capPerRule } from "./unicode.js";
 
 const TRIGGER = /\x1b|\x08|\r(?!\n)|\x9b/;
 
+/** True when the text contains sequences a terminal would act on (ESC, CSI, BS, bare CR). */
+export function hasTerminalControls(content: string): boolean {
+  return TRIGGER.test(content);
+}
+
 /** Cursor moves are clamped so `ESC[99999999B` cannot allocate millions of rows. */
 const MAX_MOVE = 1000;
 /** Screen width: like a real terminal, text wraps here (bounds row length and erase cost). */
-const WIDTH = 400;
-
-/** Shared padding cell for columns skipped by cursor movement. */
-const PAD: Cell = { ch: " ", hidden: false, src: -1 };
+const DEFAULT_WIDTH = 400;
 
 interface Cell {
   ch: string;
@@ -47,7 +49,14 @@ export interface RenderResult {
   lost: Lost[];
 }
 
-export function renderTerminal(input: string): RenderResult {
+/**
+ * Render `input` on a minimal terminal. `width` (default 400) is where text
+ * wraps; the visible-text renderer widens it to the longest source line so
+ * ordinary long lines keep their structure.
+ */
+export function renderTerminal(input: string, opts: { width?: number } = {}): RenderResult {
+  const WIDTH = Math.max(DEFAULT_WIDTH, opts.width ?? DEFAULT_WIDTH);
+  const PAD: Cell = { ch: " ", hidden: false, src: -1 };
   const rows: Cell[][] = [[]];
   let r = 0;
   let c = 0;

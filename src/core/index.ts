@@ -13,6 +13,7 @@ export { scanMarkdown } from "./markdown/scan.js";
 // Pipeline
 export { type DocKind, decodeText, detectKind, type ScanOptions, scanBytes, scanText } from "./pipeline.js";
 export { concealedFinding, isClean, meetsThreshold, severityFor } from "./policy.js";
+export { type RenderedDocument, type RenderOptions, renderVisible, renderVisibleText } from "./render.js";
 export { scanEncoded } from "./text/encoded.js";
 export { scanLayout } from "./text/layout.js";
 export { stripInvisible, visualize } from "./text/lines.js";

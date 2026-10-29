@@ -115,7 +115,7 @@ export function scanText(content: string, opts: ScanOptions): Finding[] {
     findings.push(...scanHtml(content, { ...textOpts, xml: true, staticDocument: true }));
 
   if (instructionFile) findings.push(...scanVisibleInjection(content));
-  return dedupe(findings);
+  return dedupeFindings(findings);
 }
 
 /** Scan any file content (async: PDF and Office parsing). */
@@ -125,16 +125,16 @@ export async function scanBytes(bytes: Uint8Array, opts: ScanOptions): Promise<F
   if (kind === "binary") return [];
   if (kind === "pdf") {
     const { scanPdf } = await import("./documents/pdf.js");
-    return dedupe(await scanPdf(bytes, { instructionFile }));
+    return dedupeFindings(await scanPdf(bytes, { instructionFile }));
   }
   if (kind === "ooxml") {
     const { scanOoxml, isOoxml } = await import("./documents/ooxml.js");
-    return isOoxml(bytes) ? dedupe(scanOoxml(bytes, { instructionFile })) : [];
+    return isOoxml(bytes) ? dedupeFindings(scanOoxml(bytes, { instructionFile })) : [];
   }
   return scanText(decodeText(bytes), { ...opts, kind });
 }
 
-function dedupe(findings: Finding[]): Finding[] {
+export function dedupeFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
   return findings.filter((f) => {
     const key = `${f.ruleId}|${f.line ?? ""}|${f.location ?? ""}|${f.hiddenText ?? f.message}`;

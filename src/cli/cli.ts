@@ -3,6 +3,7 @@ import pkg from "../../package.json" with { type: "json" };
 import { fetchCommand } from "./commands/fetch.js";
 import { hookCommand } from "./commands/hook.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { renderCommand } from "./commands/render.js";
 import { scanCommand } from "./commands/scan.js";
 
 const formatOption = () =>
@@ -86,6 +87,16 @@ program
   .addOption(formatOption())
   .addOption(failOnOption())
   .action(mcpCommand);
+
+program
+  .command("render <file>")
+  .description(
+    "Print only the text a human sees (hidden text, comments, alt/meta and invisible characters removed); '-' reads stdin",
+  )
+  .option("--as <filename>", "treat the input as this filename (selects the format, e.g. page.html)")
+  .addOption(new Option("--format <format>", "output format").choices(["text", "json"]).default("text"))
+  .option("--report", "print a one-line summary of what was removed to stderr")
+  .action(renderCommand);
 
 program
   .command("hook")

@@ -260,13 +260,26 @@ function hiddenFinding(
 // ─── Public API ─────────────────────────────────────────────────────
 
 export function scanOoxml(bytes: Uint8Array, opts: Opts = {}): Finding[] {
+  return analyzeOoxml(bytes, opts).findings;
+}
+
+/**
+ * Findings plus the text a human sees in Office: DOCX paragraphs in order
+ * (with the headers/footers the document references, and footnotes) minus
+ * vanished, background-coloured and microscopic runs; PPTX slides in order,
+ * skipping hidden slides and hidden, off-slide or microscopic text; XLSX
+ * visible sheets, minus hidden rows/columns and cells whose number format
+ * hides them. Comments, notes, alt text and properties are not document text.
+ */
+export function analyzeOoxml(bytes: Uint8Array, opts: Opts = {}): { findings: Finding[]; text: string } {
   let parts: Parts;
   try {
     parts = unzipParts(bytes);
   } catch (err) {
-    return [parseError(err)];
+    return { findings: [parseError(err)], text: "" };
   }
   const findings: Finding[] = [];
+  const texts: string[] = [];
   const run = (label: string, fn: () => Finding[]) => {
     try {
       findings.push(...fn());
@@ -275,13 +288,24 @@ export function scanOoxml(bytes: Uint8Array, opts: Opts = {}): Finding[] {
     }
   };
 
-  if (parts.has("word/document.xml")) run("docx", () => scanDocx(parts, opts));
+  if (parts.has("word/document.xml")) run("docx", () => scanDocx(parts, opts, texts));
   if (parts.has("ppt/presentation.xml") || [...parts.keys()].some((k) => k.startsWith("ppt/slides/"))) {
-    run("pptx", () => scanPptx(parts, opts));
+    run("pptx", () => scanPptx(parts, opts, texts));
   }
-  if (parts.has("xl/workbook.xml")) run("xlsx", () => scanXlsx(parts, opts));
+  if (parts.has("xl/workbook.xml")) run("xlsx", () => scanXlsx(parts, opts, texts));
   run("docProps", () => scanDocProps(parts, opts));
-  return findings;
+  return { findings, text: joinBlocks(texts) };
+}
+
+/** Join text blocks with one blank line, trimming trailing spaces and runs of blank lines. */
+function joinBlocks(blocks: string[]): string {
+  return blocks
+    .join("\n\n")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+$/, ""))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ─── Colours ────────────────────────────────────────────────────────
@@ -439,9 +463,10 @@ function runText(r: XNode): string {
   return s;
 }
 
-function scanDocx(parts: Parts, opts: Opts): Finding[] {
+function scanDocx(parts: Parts, opts: Opts, texts: string[] = []): Finding[] {
   const findings: Finding[] = [];
   const styles = new DocxStyles(parts.get("word/styles.xml"));
+  const visible = new Map<string, string>();
 
   const bodyParts = [...parts.keys()]
     .filter((k) => /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(k))
@@ -449,10 +474,32 @@ function scanDocx(parts: Parts, opts: Opts): Finding[] {
 
   for (const part of bodyParts) {
     try {
-      findings.push(...scanDocxPart(part, parseXml(parts.get(part)!), styles, opts));
+      const r = scanDocxPart(part, parseXml(parts.get(part)!), styles, opts);
+      findings.push(...r.findings);
+      visible.set(part, r.paras.map((p) => p.visible).join("\n"));
     } catch (err) {
       findings.push(parseError(err, part));
     }
+  }
+
+  // Visible text in page order: headers, body, footnotes/endnotes, footers. Only header and
+  // footer parts the document links to are shown on a page.
+  const linked = [...readRels(parts, "word/document.xml").values()];
+  const ofType = (type: string) =>
+    linked
+      .filter((r) => new RegExp(`/${type}$`).test(r.type))
+      .map((r) => r.target)
+      .filter((t, i, a) => a.indexOf(t) === i)
+      .sort((a, b) => numericSuffix(a) - numericSuffix(b));
+  for (const part of [
+    ...ofType("header"),
+    "word/document.xml",
+    "word/footnotes.xml",
+    "word/endnotes.xml",
+    ...ofType("footer"),
+  ]) {
+    const t = visible.get(part);
+    if (t?.trim()) texts.push(t);
   }
 
   // Comments
@@ -476,7 +523,12 @@ function scanDocx(parts: Parts, opts: Opts): Finding[] {
   return findings;
 }
 
-function scanDocxPart(part: string, doc: XNode, styles: DocxStyles, opts: Opts): Finding[] {
+function scanDocxPart(
+  part: string,
+  doc: XNode,
+  styles: DocxStyles,
+  opts: Opts,
+): { findings: Finding[]; paras: DocxPara[] } {
   const findings: Finding[] = [];
   const root = rootEl(doc);
   const docBg = rgb(attr(child(root, "w:background"), "w:color"));
@@ -611,7 +663,7 @@ function scanDocxPart(part: string, doc: XNode, styles: DocxStyles, opts: Opts):
     );
     if (f && !findings.some((x) => x.ruleId === f.ruleId && x.hiddenText === f.hiddenText)) findings.push(f);
   }
-  return findings;
+  return { findings, paras };
 }
 
 // ─── PPTX ───────────────────────────────────────────────────────────
@@ -660,7 +712,7 @@ function paragraphsText(el: XNode | undefined): string {
     .join("\n");
 }
 
-function scanPptx(parts: Parts, opts: Opts): Finding[] {
+function scanPptx(parts: Parts, opts: Opts, texts: string[] = []): Finding[] {
   const findings: Finding[] = [];
   let cx = 9144000;
   let cy = 6858000;
@@ -787,7 +839,13 @@ function scanPptx(parts: Parts, opts: Opts): Finding[] {
           for (const p of desc(body, "a:p")) {
             const lvl = Number(attr(child(p, "a:pPr"), "lvl") ?? 0);
             const defSz = attr(child(child(lstStyle, `a:lvl${lvl + 1}pPr`), "a:defRPr"), "sz");
-            for (const r of kids(p).filter((k) => k.name === "a:r" || k.name === "a:fld")) {
+            for (const r of kids(p).filter(
+              (k) => k.name === "a:r" || k.name === "a:fld" || k.name === "a:br",
+            )) {
+              if (r.name === "a:br") {
+                shown.push("\n");
+                continue;
+              }
               const t = desc(r, "a:t").map(textContent).join("");
               if (!t) continue;
               const szAttr = attr(child(r, "a:rPr"), "sz") ?? defSz;
@@ -808,6 +866,7 @@ function scanPptx(parts: Parts, opts: Opts): Finding[] {
       if (spTree) walk(spTree, ID_XFORM, false);
 
       const humanView = visibleTexts.join(" ");
+      texts.push(visibleTexts.map((t) => t.replace(/\n+$/, "")).join("\n"));
       for (const tech of Object.keys(PPTX_TECH) as PptxTech[]) {
         const h = hidden[tech];
         if (!h) continue;
@@ -924,7 +983,15 @@ function formatHidesText(code: string): boolean {
   return sections.length >= 4 && sections[3].trim() === "";
 }
 
-function scanXlsx(parts: Parts, opts: Opts): Finding[] {
+/** True when the number format section that applies to `n` is empty (e.g. ";;;"). */
+function formatHidesNumber(code: string, n: number): boolean {
+  if (!code.includes(";") || !Number.isFinite(n)) return false;
+  const sections = code.split(/;(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+  const section = n > 0 ? sections[0] : n < 0 ? (sections[1] ?? sections[0]) : (sections[2] ?? sections[0]);
+  return section.trim() === "";
+}
+
+function scanXlsx(parts: Parts, opts: Opts, texts: string[] = []): Finding[] {
   const findings: Finding[] = [];
   const wb = parseXml(parts.get("xl/workbook.xml")!);
   const wbRels = readRels(parts, "xl/workbook.xml");
@@ -933,18 +1000,33 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
   const sstXml = parts.get("xl/sharedStrings.xml");
   if (sstXml) for (const si of desc(parseXml(sstXml), "si")) sst.push(richText(si));
 
-  // Styles whose number format hides text.
+  // Styles whose number format hides text (and the format code of each style, for numbers).
   const hidingXf = new Set<number>();
+  const xfFormat: string[] = [];
   const stylesXml = parts.get("xl/styles.xml");
   if (stylesXml) {
     const st = parseXml(stylesXml);
     const hidingFmt = new Set<string>();
-    for (const nf of desc(st, "numFmt"))
+    const codes = new Map<string, string>();
+    for (const nf of desc(st, "numFmt")) {
+      codes.set(attr(nf, "numFmtId") ?? "", attr(nf, "formatCode") ?? "");
       if (formatHidesText(attr(nf, "formatCode") ?? "")) hidingFmt.add(attr(nf, "numFmtId") ?? "");
+    }
     kids(first(st, "cellXfs"), "xf").forEach((xf, i) => {
       if (hidingFmt.has(attr(xf, "numFmtId") ?? "")) hidingXf.add(i);
+      xfFormat[i] = codes.get(attr(xf, "numFmtId") ?? "") ?? "";
     });
   }
+  /** Displayed value of a non-string cell (raw: number formats other than hiding ones are not applied). */
+  const valueText = (c: XNode): string => {
+    const t = attr(c, "t");
+    const v = textContent(child(c, "v")).trim();
+    if (!v || t === "s" || t === "inlineStr" || t === "str") return "";
+    if (t === "b") return v === "1" ? "TRUE" : "FALSE";
+    if (t === "e") return v;
+    const n = Number(v);
+    return formatHidesNumber(xfFormat[Number(attr(c, "s") ?? 0)] ?? "", n) ? "" : v;
+  };
 
   const sheets = desc(wb, "sheet").map((s, i) => {
     const rid = attr(s, "r:id") ?? "";
@@ -1006,19 +1088,26 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
         const strong: Bucket = { texts: [], refs: [], reasons: new Set() };
         const soft: Bucket = { texts: [], refs: [], reasons: new Set() };
         const visibleTexts: string[] = [];
+        const visibleRows: string[] = [];
         for (const row of desc(doc, "row")) {
           const ht = attr(row, "ht");
           const rowHidden = isTrue(attr(row, "hidden")) || (ht !== undefined && Number(ht) < 0.5);
           const rowSoft = rowHidden && (hasFilter || Number(attr(row, "outlineLevel") ?? 0) > 0);
+          const rowCells: string[] = [];
           for (const c of kids(row, "c")) {
             const text = cellText(c);
-            if (!text.trim()) continue;
             const ref = attr(c, "r") ?? "";
             const ci = colIndex(ref);
             const col = hiddenCols.find((h) => ci >= h.min && ci <= h.max);
+            if (!text.trim()) {
+              const value = rowHidden || col ? "" : valueText(c);
+              if (value) rowCells.push(value);
+              continue;
+            }
             const fmtHidden = hidingXf.has(Number(attr(c, "s") ?? -1));
             if (!rowHidden && !col && !fmtHidden) {
               visibleTexts.push(text);
+              rowCells.push(text.replace(/\s*\n\s*/g, " "));
               continue;
             }
             // Hidden rows/columns are everyday Excel and one click to unhide (a channel); a ";;;"
@@ -1034,7 +1123,9 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
               );
             if (col) b.reasons.add(col.soft ? "collapsed outline column" : "hidden column");
           }
+          if (rowCells.length) visibleRows.push(rowCells.join("\t"));
         }
+        texts.push(visibleRows.join("\n"));
         for (const [b, concealment] of [
           [strong, "hidden"],
           [soft, "channel"],

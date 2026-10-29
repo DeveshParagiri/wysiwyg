@@ -52,8 +52,9 @@ export class LineIndex {
 }
 
 /** Characters that never render visibly: format, default-ignorable, private use, controls. */
-const INVISIBLE_CLASS = "\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Co}\\u2800\\u3164\\uffa0\\u115f\\u1160";
-const CONTROL_CLASS = "\\x00-\\x08\\x0b-\\x1f\\x7f\\x80-\\x9f"; // all C0/C1 controls except \\t and \\n
+export const INVISIBLE_CLASS =
+  "\\p{Cf}\\p{Default_Ignorable_Code_Point}\\p{Co}\\u2800\\u3164\\uffa0\\u115f\\u1160";
+export const CONTROL_CLASS = "\\x00-\\x08\\x0b-\\x1f\\x7f\\x80-\\x9f"; // all C0/C1 controls except \\t and \\n
 const INVISIBLE_RE = new RegExp(`[${INVISIBLE_CLASS}]`, "u");
 const HIDDEN_GLOBAL = new RegExp(`[${CONTROL_CLASS}${INVISIBLE_CLASS}]`, "gu");
 

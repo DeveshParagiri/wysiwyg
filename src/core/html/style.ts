@@ -1,5 +1,5 @@
 import type { CheerioAPI } from "cheerio";
-import * as csstree from "css-tree/dist/csstree.esm.js";
+import * as csstree from "css-tree/dist/csstree.esm";
 import type { Element } from "domhandler";
 import { mediaMatches } from "./media.js";
 
@@ -54,6 +54,7 @@ const TRACKED = new Set([
   "fill",
   "fill-opacity",
   "line-height",
+  "white-space",
 ]);
 
 function specificity(selector: string): [number, number, number] {

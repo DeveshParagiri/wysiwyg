@@ -17,9 +17,35 @@ const md = new MarkdownIt({ html: true, linkify: false });
 const REF_DEF =
   /^ {0,3}\[([^\]]+)\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+("([^"\n]*)"|'([^'\n]*)'|\(([^)\n]*)\)))?[ \t]*$/;
 
+/** Front matter is metadata, not rendered prose; blank it out but keep line numbers. */
+function blankFrontMatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n/, (fm) => fm.replace(/[^\n]/g, " "));
+}
+
+/** Comment-style reference definitions (`[//]: # (...)`, `[comment]: <> (...)`). */
+function isRefComment(label: string, target: string): boolean {
+  return /^(#|<>|\/\/)$/.test(target) || /^(\/\/|comment|#|_)$/i.test(label);
+}
+
+/**
+ * The HTML a Markdown viewer renders (same markdown-it setup as the scanner),
+ * with front matter and comment-style reference definitions removed so they
+ * can never surface as text even where a parser would not recognise them.
+ */
+export function renderMarkdownHtml(content: string): string {
+  const lines = blankFrontMatter(content).split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^ {0,3}(```|~~~)/.test(lines[i])) inFence = !inFence;
+    if (inFence) continue;
+    const m = REF_DEF.exec(lines[i]);
+    if (m && isRefComment(m[1], m[2])) lines[i] = "";
+  }
+  return md.render(lines.join("\n"));
+}
+
 export function scanMarkdown(content: string, opts: { instructionFile?: boolean } = {}): Finding[] {
-  // Front matter is metadata, not rendered prose; blank it out but keep line numbers.
-  const body = content.replace(/^---\n[\s\S]*?\n---\n/, (fm) => fm.replace(/[^\n]/g, " "));
+  const body = blankFrontMatter(content);
   const findings = scanHtml(md.render(body), {
     source: content,
     staticDocument: true,
@@ -37,7 +63,7 @@ export function scanMarkdown(content: string, opts: { instructionFile?: boolean 
     if (!m) continue;
     const [, label, target] = m;
     const title = m[4] ?? m[5] ?? m[6];
-    const isComment = /^(#|<>|\/\/)$/.test(target) || /^(\/\/|comment|#|_)$/i.test(label);
+    const isComment = isRefComment(label, target);
     const hidden = title ?? (isComment ? label : undefined);
     if (!hidden) continue;
     findings.push(

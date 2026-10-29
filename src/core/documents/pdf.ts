@@ -281,13 +281,29 @@ export async function scanPdf(
   bytes: Uint8Array,
   opts: { instructionFile?: boolean } = {},
 ): Promise<Finding[]> {
+  return (await analyzePdf(bytes, opts)).findings;
+}
+
+/**
+ * Findings plus the text a human sees on each page: glyph runs classified as
+ * visible, in content-stream order, one line per text line. Invisible, white,
+ * tiny, off-page, clipped, covered and hidden-layer text is left out, as is
+ * render-mode-3 text over a page image (an OCR layer: the reader sees the
+ * image, not this text). Annotations and metadata are not page text.
+ */
+export async function analyzePdf(
+  bytes: Uint8Array,
+  opts: { instructionFile?: boolean } = {},
+): Promise<{ findings: Finding[]; pages: string[] }> {
   const findings: Finding[] = [];
+  const pages: string[] = [];
   let doc: Awaited<ReturnType<PdfJs["getDocument"]>["promise"]> | undefined;
   try {
     const pdfjs = await loadPdfJs();
     doc = await pdfjs.getDocument({
-      // pdfjs may transfer/detach the buffer; give it a copy.
-      data: bytes.slice(),
+      // A real copy as a plain Uint8Array: pdfjs rejects Node Buffers and may detach
+      // what it's given (Buffer#slice would return a shared Buffer view).
+      data: new Uint8Array(bytes),
       verbosity: pdfjs.VerbosityLevel.ERRORS,
       isEvalSupported: false,
       disableFontFace: true,
@@ -307,7 +323,9 @@ export async function scanPdf(
     for (let n = 1; n <= doc.numPages; n++) {
       try {
         const page = await doc.getPage(n);
-        findings.push(...(await scanPage(pdfjs, page, n, ocConfig, opts)));
+        const runs = await pageRuns(pdfjs, page, ocConfig);
+        findings.push(...buildPageFindings(runs, n, opts));
+        pages.push(renderRuns(runs.filter((r) => r.tech === null)));
         findings.push(...(await scanAnnotations(page, n, opts)));
         page.cleanup();
       } catch (err) {
@@ -323,7 +341,7 @@ export async function scanPdf(
       /* ignore */
     }
   }
-  return findings;
+  return { findings, pages };
 }
 
 function parseError(err: unknown, location?: string): Finding {
@@ -351,13 +369,12 @@ interface Glyph {
   isSpace?: boolean;
 }
 
-async function scanPage(
+/** Every glyph run on the page, each classified as visible (tech null) or hidden by one technique. */
+async function pageRuns(
   pdfjs: PdfJs,
   page: PdfPage,
-  pageNum: number,
   ocConfig: { isVisible(props: unknown): boolean } | null,
-  opts: { instructionFile?: boolean },
-): Promise<Finding[]> {
+): Promise<Run[]> {
   const OPS = pdfjs.OPS;
   const view = page.view as number[];
   const pageBox: Box = [
@@ -798,7 +815,20 @@ async function scanPage(
     }
   }
 
-  return buildPageFindings(runs, pageNum, opts);
+  return runs;
+}
+
+/** Visible runs as text: a new line wherever the baseline changes, spaces only at positional gaps. */
+function renderRuns(runs: Run[]): string {
+  const lines: Run[][] = [];
+  let prev: Run | null = null;
+  for (const r of runs) {
+    const tol = Math.max(prev?.size ?? 0, r.size, 0.1);
+    if (!prev || Math.abs(r.start[1] - prev.end[1]) >= 0.5 * tol) lines.push([]);
+    lines[lines.length - 1].push(r);
+    prev = r;
+  }
+  return lines.map(joinRuns).filter(Boolean).join("\n");
 }
 
 /** Join runs into readable text, adding spaces only where there is a positional gap. */
