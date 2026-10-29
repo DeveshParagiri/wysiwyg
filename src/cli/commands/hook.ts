@@ -4,6 +4,7 @@ import { severityRank } from "../../core/policy.js";
 import { visualize } from "../../core/text/lines.js";
 import type { Finding, Severity } from "../../core/types.js";
 import { writeOut } from "../output/write.js";
+import { evaluateSessionStart } from "./session-start.js";
 
 /**
  * `wysiwyg hook`: a Claude Code PostToolUse hook.
@@ -251,7 +252,7 @@ export async function hookCommand(options: HookOptions): Promise<void> {
   try {
     if (process.stdin.isTTY) {
       console.error(
-        "wysiwyg hook reads a Claude Code PostToolUse payload on stdin; see `wysiwyg hook --help`.",
+        "wysiwyg hook reads a Claude Code PostToolUse or SessionStart payload on stdin; see `wysiwyg hook --help`.",
       );
       return;
     }
@@ -268,7 +269,10 @@ export async function hookCommand(options: HookOptions): Promise<void> {
       console.error("wysiwyg hook: ignoring input that is not a JSON object");
       return;
     }
-    const output = evaluateHook(input, threshold);
+    const output =
+      input.hook_event_name === "SessionStart"
+        ? await evaluateSessionStart(input, threshold)
+        : evaluateHook(input, threshold);
     if (output) await writeOut(JSON.stringify(output));
   } catch (err) {
     // Never break the user's session over a scanner problem.

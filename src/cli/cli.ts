@@ -90,7 +90,7 @@ program
 program
   .command("hook")
   .description(
-    "Claude Code PostToolUse hook: flag hidden content in tool results (reads the hook JSON on stdin)",
+    "Claude Code hook: flag hidden content in tool results (PostToolUse) and in agent instruction files at session start (SessionStart). Reads the hook JSON on stdin",
   )
   .addOption(
     new Option("--fail-on <severity>", "report findings at or above this severity")
