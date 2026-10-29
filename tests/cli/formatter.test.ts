@@ -87,7 +87,7 @@ describe("formatFindings: pretty", () => {
 
   test("clean across many files mentions the count", () => {
     const out = stripSgr(formatFindings([result("a", []), result("b", []), result("c", [])], "pretty"));
-    expect(out).toContain("in 3 files");
+    expect(out).toContain("3 files");
   });
 
   test("single file shows severity, line, message and rule", () => {
@@ -126,7 +126,7 @@ describe("formatFindings: pretty", () => {
     const rs = [result("a.md", [finding("info", { message: "an info note" })])];
     const quiet = stripSgr(formatFindings(rs, "pretty"));
     expect(quiet).toContain("No hidden content detected");
-    expect(quiet).toContain("1 info finding hidden; use --verbose");
+    expect(quiet).toContain("1 info hidden (--verbose)");
     expect(quiet).not.toContain("an info note");
     const verbose = stripSgr(formatFindings(rs, "pretty", { verbose: true }));
     expect(verbose).toContain("INFO");

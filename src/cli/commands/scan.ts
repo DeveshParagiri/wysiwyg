@@ -2,15 +2,17 @@ import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { analyzeClipboardHTML } from "../../core/clipboard.js";
 import { DEFAULT_CONFIG, MAX_FILE_SIZE } from "../../core/constants/index.js";
-import { detectKind, scanBytes, scanText } from "../../core/pipeline.js";
+import { scanBytes, scanText } from "../../core/pipeline.js";
 import { isClean, meetsThreshold } from "../../core/policy.js";
 import type { Finding, OutputFormat, ScanResult, Severity } from "../../core/types.js";
 import { type LoadedConfig, loadConfig } from "../config/loader.js";
 import { formatFindings } from "../output/formatter.js";
+import { fmtCount, Progress } from "../output/progress.js";
 import { writeOut } from "../output/write.js";
 import { readClipboardHTML } from "../platform/clipboard.js";
-import { readFileForScan, type WalkedFile, walkDirectory } from "../platform/fs.js";
+import { type WalkedFile, walkDirectory } from "../platform/fs.js";
 import { changedFiles } from "../platform/git.js";
+import { scanFiles } from "../platform/pool.js";
 
 export interface ScanOptions {
   recursive?: boolean;
@@ -30,68 +32,71 @@ function result(source: string, findings: Finding[]): ScanResult {
   return { source, findings, clean: isClean(findings) };
 }
 
-/** Scan one file from disk. */
-export async function scanFile(
-  file: WalkedFile,
-  opts: { expectedScripts?: string[]; maxBytes?: number } = {},
-): Promise<ScanResult> {
-  const read = await readFileForScan(file.path, opts.maxBytes);
-  const findings = await scanBytes(read.bytes, { path: file.rel, expectedScripts: opts.expectedScripts });
-  if (read.truncated && detectKind(file.rel, read.bytes) !== "binary") {
-    findings.push({
-      ruleId: "evasion/oversized",
-      type: "scanner_evasion",
-      severity: "warning",
-      message: `File is ${(read.size / 1048576).toFixed(1)} MB; only the first ${(read.bytes.length / 1048576).toFixed(1)} MB were scanned`,
-      humanView: "",
-      agentView: "",
-      detail: "Raise the limit with --max-size if this file is fed to agents.",
-    });
-  }
-  if (file.outsideTarget) {
-    findings.push({
-      ruleId: "evasion/symlink-outside-root",
-      type: "scanner_evasion",
-      severity: "info",
-      message: `Symlink resolves outside the scanned tree (${file.outsideTarget})`,
-      humanView: "",
-      agentView: "",
-    });
-  }
-  return result(file.display ?? file.path, findings);
+function fail(message: string): never {
+  console.error(`wysiwyg: ${message}`);
+  process.exit(2);
 }
 
-export async function scanCommand(target: string | undefined, options: ScanOptions): Promise<void> {
+/** Expand the targets the user named into files, shown with the paths they typed. */
+async function collectFiles(
+  targets: string[],
+  ignore: string[],
+  options: ScanOptions,
+): Promise<WalkedFile[]> {
+  const files: WalkedFile[] = [];
+  for (const target of targets) {
+    const abs = resolve(target);
+    const st = statSync(abs, { throwIfNoEntry: false });
+    if (!st) fail(`cannot access "${target}"`);
+    if (st.isFile()) {
+      files.push({ path: abs, rel: basename(abs), display: target });
+      continue;
+    }
+    let found = await walkDirectory(abs, ignore);
+    if (options.recursive === false) found = found.filter((f) => !f.rel.includes("/"));
+    if (options.diff || options.staged) {
+      const changed = await changedFiles(abs, { diff: options.diff, staged: options.staged });
+      found = found.filter((f) => changed.has(realpathSync(f.path)));
+    }
+    const shown = (rel: string) => (target === "." ? rel : join(target, rel));
+    files.push(...found.map((f) => ({ ...f, display: shown(f.rel) })));
+  }
+  return files;
+}
+
+export async function scanCommand(
+  targetArgs: string[] | string | undefined,
+  options: ScanOptions,
+): Promise<void> {
+  const started = performance.now();
   const format = (options.format || "pretty") as OutputFormat;
-  const targetPath = resolve(target || ".");
+  const targets = [targetArgs ?? []].flat();
+  if (!targets.length) targets.push(".");
   const maxBytes = options.maxSize ? Math.round(parseFloat(options.maxSize) * 1048576) : MAX_FILE_SIZE;
 
   let loaded: Pick<LoadedConfig, "config" | "findings" | "path">;
   try {
-    const startDir = statSync(targetPath, { throwIfNoEntry: false })?.isDirectory()
-      ? targetPath
-      : dirname(targetPath);
+    const first = resolve(targets[0]);
+    const startDir = statSync(first, { throwIfNoEntry: false })?.isDirectory() ? first : dirname(first);
     loaded =
       options.config === false
         ? { config: { ...DEFAULT_CONFIG }, findings: [], path: null }
         : loadConfig(startDir, typeof options.config === "string" ? options.config : undefined);
   } catch (err) {
-    console.error(`Error: cannot read config: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(2);
+    fail(`cannot read config: ${err instanceof Error ? err.message : String(err)}`);
   }
   const { config } = loaded;
   const failOn = (options.failOn || config.fail_on || "critical") as Severity;
-  const scanOpts = { expectedScripts: config.expected_scripts, maxBytes };
 
   const results: ScanResult[] = [];
   if (loaded.findings.length) results.push(result(loaded.path ?? ".wysiwygrc", loaded.findings));
 
+  const progress = new Progress();
   try {
     if (options.stdin) {
       const chunks: Buffer[] = [];
       for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
-      const bytes = new Uint8Array(Buffer.concat(chunks));
-      const findings = await scanBytes(bytes, {
+      const findings = await scanBytes(new Uint8Array(Buffer.concat(chunks)), {
         path: options.as ?? "stdin",
         expectedScripts: config.expected_scripts,
       });
@@ -105,35 +110,20 @@ export async function scanCommand(target: string | undefined, options: ScanOptio
       if (clipboard.html) findings.push(...analyzeClipboardHTML(clipboard.html, clipboard.plainText));
       results.push(result("clipboard", findings));
     } else {
-      const st = statSync(targetPath, { throwIfNoEntry: false });
-      if (!st) {
-        console.error(`Error: Cannot access "${targetPath}"`);
-        process.exit(2);
-      }
-      if (st.isFile()) {
-        results.push(
-          await scanFile(
-            { path: targetPath, rel: basename(targetPath), display: target ?? targetPath },
-            scanOpts,
-          ),
-        );
-      } else {
-        let files = await walkDirectory(targetPath, config.ignore ?? []);
-        if (options.recursive === false) files = files.filter((f) => !f.rel.includes("/"));
-        if (options.diff || options.staged) {
-          const changed = await changedFiles(targetPath, { diff: options.diff, staged: options.staged });
-          files = files.filter((f) => changed.has(realpathSync(f.path)));
-        }
-        if (format === "pretty")
-          console.error(`Scanning ${files.length} file${files.length === 1 ? "" : "s"}…`);
-        // Show paths the way the user named the target ("docs/x.md", not an absolute path)
-        const shown = (rel: string) => (target && target !== "." ? join(target, rel) : rel);
-        for (const file of files)
-          results.push(await scanFile({ ...file, display: shown(file.rel) }, scanOpts));
-      }
+      progress.update("Finding files…", true);
+      const files = await collectFiles(targets, config.ignore ?? [], options);
+      const label = (done: number) => `Scanning ${fmtCount(done)} / ${fmtCount(files.length)} files`;
+      const scanned = await scanFiles(files, { expectedScripts: config.expected_scripts, maxBytes }, (done) =>
+        progress.update(label(done)),
+      );
+      results.push(...scanned);
     }
+    progress.clear();
 
-    await writeOut(formatFindings(results, format, { verbose: options.verbose, cwd: process.cwd() }));
+    const elapsedMs = performance.now() - started;
+    await writeOut(
+      formatFindings(results, format, { verbose: options.verbose, cwd: process.cwd(), elapsedMs }),
+    );
     // exitCode, not exit(): exiting immediately can truncate large output on a pipe
     if (
       meetsThreshold(
@@ -143,7 +133,7 @@ export async function scanCommand(target: string | undefined, options: ScanOptio
     )
       process.exitCode = 1;
   } catch (err) {
-    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(2);
+    progress.clear();
+    fail(err instanceof Error ? err.message : String(err));
   }
 }

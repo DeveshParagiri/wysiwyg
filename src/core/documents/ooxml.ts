@@ -10,7 +10,7 @@ import { load } from "cheerio";
 import { unzipSync } from "fflate";
 import { classifyIntent } from "../intent.js";
 import { concealedFinding } from "../policy.js";
-import type { Finding } from "../types.js";
+import type { Concealment, Finding } from "../types.js";
 
 type Opts = { instructionFile?: boolean };
 type Parts = Map<string, string>;
@@ -92,6 +92,11 @@ const norm = (s: string) => s.replace(/\s+/g, " ").trim();
 const trimView = (s: string, max = VIEW_MAX) => {
   const t = norm(s);
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+/** The end of the visible text, as context leading into hidden content. */
+const tailView = (s: string, max = 120) => {
+  const t = norm(s);
+  return t.length > max ? `…${t.slice(-max)}` : t;
 };
 const isTrue = (v: string | undefined) => v !== undefined && !/^(0|false|off)$/i.test(v);
 
@@ -234,13 +239,14 @@ function hiddenFinding(
   agentView: string,
   opts: Opts,
   detail?: string,
+  concealment: Concealment = "hidden",
 ): Finding | null {
   const t = norm(text);
   if (!t) return null;
   return concealedFinding({
     ruleId,
     type: "document_hidden",
-    concealment: "hidden",
+    concealment,
     technique,
     hiddenText: t,
     location,
@@ -977,6 +983,8 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
           text,
           opts,
           `state="${sheet.state}" in xl/workbook.xml`,
+          // A hidden sheet is one right-click away (Unhide); veryHidden needs the VBA editor.
+          sheet.state === "veryHidden" ? "hidden" : "channel",
         );
         if (f) findings.push(f);
       } else {
@@ -1013,7 +1021,9 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
               visibleTexts.push(text);
               continue;
             }
-            const isStrong = fmtHidden || (rowHidden && !rowSoft) || (col !== undefined && !col.soft);
+            // Hidden rows/columns are everyday Excel and one click to unhide (a channel); a ";;;"
+            // number format makes a cell look empty with no UI cue at all (concealment).
+            const isStrong = fmtHidden;
             const b = isStrong ? strong : soft;
             b.texts.push(text);
             b.refs.push(ref);
@@ -1040,10 +1050,10 @@ function scanXlsx(parts: Parts, opts: Opts): Finding[] {
               technique: `XLSX text in ${[...b.reasons].join(" / ")}`,
               hiddenText,
               location: loc,
-              humanView: trimView(visibleTexts.join(" ")),
+              humanView: tailView(visibleTexts.join(" ")),
               agentView: trimView(
-                [...visibleTexts, ...b.texts].join(" "),
-                Math.max(VIEW_MAX, hiddenText.length + 120),
+                `${tailView(visibleTexts.join(" "))} ${b.texts.join(" ")}`,
+                Math.max(VIEW_MAX, hiddenText.length + 130),
               ),
               detail: `cells ${b.refs.slice(0, 8).join(", ")}${b.refs.length > 8 ? ", …" : ""}`,
               instructionFile: opts.instructionFile,

@@ -1,8 +1,7 @@
 import type { Dirent } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { isAgentInstructionFile } from "../../core/constants/agent-files.js";
-import { MAX_FILE_SIZE } from "../../core/constants/index.js";
 
 export interface WalkedFile {
   /** Absolute path as reached through the tree (may be a symlink). */
@@ -99,30 +98,4 @@ export async function walkDirectory(root: string, ignorePatterns: string[]): Pro
 
   await walk(root, false);
   return files;
-}
-
-export interface ReadResult {
-  bytes: Uint8Array;
-  /** Total size on disk; larger than bytes.length when truncated. */
-  size: number;
-  truncated: boolean;
-}
-
-/** Read a file, capped at maxBytes (the head is scanned, the rest reported). */
-export async function readFileForScan(filePath: string, maxBytes = MAX_FILE_SIZE): Promise<ReadResult> {
-  const { size } = await stat(filePath);
-  const length = Math.min(size, maxBytes);
-  const handle = await open(filePath, "r");
-  try {
-    const bytes = new Uint8Array(length);
-    let read = 0;
-    while (read < length) {
-      const { bytesRead } = await handle.read(bytes, read, length - read, read);
-      if (!bytesRead) break;
-      read += bytesRead;
-    }
-    return { bytes: bytes.subarray(0, read), size, truncated: size > maxBytes };
-  } finally {
-    await handle.close();
-  }
 }

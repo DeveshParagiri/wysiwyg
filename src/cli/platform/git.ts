@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { run } from "./run.js";
 
 /**
  * Files changed relative to a git ref (--diff) or staged for commit
@@ -11,11 +12,9 @@ export async function changedFiles(
   opts: { diff?: string; staged?: boolean },
 ): Promise<Set<string>> {
   const git = (args: string[]) => {
-    const proc = Bun.spawnSync(["git", "-C", dir, ...args], { stderr: "pipe" });
-    if (proc.exitCode !== 0) {
-      throw new Error(`git ${args.join(" ")} failed: ${proc.stderr.toString().trim()}`);
-    }
-    return proc.stdout.toString();
+    const proc = run("git", ["-C", dir, ...args]);
+    if (proc.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${proc.stderr.trim()}`);
+    return proc.stdout;
   };
   const top = realpathSync(git(["rev-parse", "--show-toplevel"]).trim());
   const args = opts.staged

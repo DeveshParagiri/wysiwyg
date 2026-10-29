@@ -18,6 +18,8 @@ export interface FormatOptions {
   verbose?: boolean;
   /** Paths are printed relative to this directory. */
   cwd?: string;
+  /** Wall time of the scan, shown in the summary. */
+  elapsedMs?: number;
 }
 
 // ─── Layout ──────────────────────────────────────────────────────────
@@ -37,7 +39,7 @@ function termWidth(): number {
 }
 
 function displayPath(source: string, cwd?: string): string {
-  if (source === "stdin" || source === "clipboard" || /^https?:/.test(source)) return visualize(source);
+  if (source === "stdin" || source === "clipboard" || /^(https?|mcp):/.test(source)) return visualize(source);
   const rel = relative(cwd ?? process.cwd(), source);
   return visualize(rel && !rel.startsWith("..") ? rel : source);
 }
@@ -165,38 +167,62 @@ function formatFinding(finding: Finding): string {
   return lines.join("\n");
 }
 
+const plural = (n: number, word: string) => `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
+
 function counts(findings: Finding[], colored: boolean): string {
   const parts: string[] = [];
   const c = (s: Severity) => findings.filter((f) => f.severity === s).length;
   const paint = (s: Severity, text: string) =>
     !colored ? text : s === "critical" ? pc.red(text) : s === "warning" ? pc.yellow(text) : pc.dim(text);
   for (const s of ["critical", "warning", "info"] as Severity[]) {
-    if (c(s)) parts.push(paint(s, `${c(s)} ${s}`));
+    // "2 critical, 3 warnings, 5 info"
+    if (c(s))
+      parts.push(paint(s, s === "warning" ? plural(c(s), s) : `${c(s).toLocaleString("en-US")} ${s}`));
   }
   return parts.join(colored ? pc.dim(", ") : ", ");
+}
+
+function worst(findings: Finding[]): Severity | null {
+  return findings.reduce<Severity | null>(
+    (w, f) => (!w || RANK[f.severity] > RANK[w] ? f.severity : w),
+    null,
+  );
+}
+
+function marker(findings: Finding[]): string {
+  const w = worst(findings);
+  return w === "critical" ? pc.red("●") : w === "warning" ? pc.yellow("●") : pc.dim("○");
 }
 
 function formatSource(result: ScanResult, opts: FormatOptions): string {
   const shown = visible(result.findings, opts).sort(
     (a, b) => RANK[b.severity] - RANK[a.severity] || (a.line ?? 0) - (b.line ?? 0),
   );
-  const marker = result.clean ? pc.dim("○") : pc.red("●");
-  const header = `${marker} ${pc.bold(displayPath(result.source, opts.cwd))}  ${counts(result.findings, true)}`;
-  return [header, ...shown.map(formatFinding)].join("\n\n");
+  const header = `${marker(result.findings)} ${pc.bold(displayPath(result.source, opts.cwd))}  ${counts(result.findings, true)}`;
+  // Findings sit directly under their file; a blank line separates findings
+  return [header, shown.map(formatFinding).join("\n\n")].join("\n");
+}
+
+function elapsed(opts: FormatOptions): string {
+  if (opts.elapsedMs === undefined) return "";
+  const ms = opts.elapsedMs;
+  return pc.dim(` · ${ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`}`);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────
 
 /** Totals line; with many affected files, a compact per-file recap after the details. */
-export function formatSummary(results: ScanResult[], opts: FormatOptions = {}): string {
+export function formatSummary(results: ScanResult[], opts: FormatOptions = {}, note = ""): string {
   const all = results.flatMap((r) => r.findings);
   const dirty = results.filter((r) => !r.clean);
   const lines = [
-    `${pc.bold(`${dirty.length} of ${results.length}`)} file${results.length !== 1 ? "s" : ""} with findings  ${counts(all, true)}`,
+    `${pc.bold(`${dirty.length.toLocaleString("en-US")} of ${plural(results.length, "file")}`)} with findings  ${counts(all, true)}${elapsed(opts)}${note}`,
   ];
   if (dirty.length >= 4) {
     for (const r of dirty)
-      lines.push(`  ${pc.red("●")} ${displayPath(r.source, opts.cwd)}  ${pc.dim(counts(r.findings, false))}`);
+      lines.push(
+        `  ${marker(r.findings)} ${displayPath(r.source, opts.cwd)}  ${pc.dim(counts(r.findings, false))}`,
+      );
   }
   return lines.join("\n");
 }
@@ -228,20 +254,16 @@ export function formatFindings(
   if (format === "json") return formatJSON(results);
   if (format === "sarif") return formatSARIF(results, opts.cwd);
 
-  if (results.length === 0) return `${pc.green("✓")} No files to scan.`;
+  if (results.length === 0) return `${pc.yellow("!")} No files to scan.`;
 
   const withOutput = results.filter((r) => !r.clean || visible(r.findings, opts).length > 0);
   const infoCount = results.flatMap((r) => r.findings).filter((f) => f.severity === "info").length;
-  const infoNote =
-    !opts.verbose && infoCount
-      ? pc.dim(` (${infoCount} info finding${infoCount > 1 ? "s" : ""} hidden; use --verbose)`)
-      : "";
+  const infoNote = !opts.verbose && infoCount ? pc.dim(` · ${infoCount} info hidden (--verbose)`) : "";
 
   if (!withOutput.length) {
-    const where = results.length === 1 ? "" : ` in ${results.length} files`;
-    return `${pc.green("✓")} No hidden content detected${where}.${infoNote}`;
+    const where = results.length === 1 ? "" : pc.dim(` · ${plural(results.length, "file")}`);
+    return `${pc.green("✓")} No hidden content detected${where}${elapsed(opts)}${infoNote}`;
   }
   const blocks = withOutput.map((r) => formatSource(r, opts));
-  if (results.length === 1) return [...blocks, infoNote.trim()].filter(Boolean).join("\n\n");
-  return [...blocks, formatSummary(results, opts) + infoNote].join("\n\n");
+  return [...blocks, formatSummary(results, opts, infoNote)].join("\n\n");
 }

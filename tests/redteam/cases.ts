@@ -48,6 +48,7 @@ export const CHANNEL_IDS = new Set([
   "H19",
   "H20",
   "H23",
+  "D10",
   "M01",
   "M02",
   "M03",
@@ -145,7 +146,7 @@ export function makePptx(slides: { xml: string }[]): Uint8Array {
       `<?xml version="1.0"?><p:presentation ${P_NS}><p:sldSz cx="9144000" cy="6858000"/></p:presentation>`,
     ),
   };
-  slides.forEach((s, i) => (files[`ppt/slides/slide${i + 1}.xml`] = strToU8(s.xml)));
+  for (const [i, s] of slides.entries()) files[`ppt/slides/slide${i + 1}.xml`] = strToU8(s.xml);
   return zipSync(files);
 }
 
@@ -154,13 +155,13 @@ const pptxShape = (text: string, x = 914400, y = 914400, rPr = "") =>
 const pptxSlide = (shapes: string, attrs = "") =>
   `<?xml version="1.0"?><p:sld ${P_NS}${attrs}><p:cSld><p:spTree>${shapes}</p:spTree></p:cSld></p:sld>`;
 
-export function makeXlsx(hiddenSheet: boolean, payload = PAYLOAD): Uint8Array {
+export function makeXlsx(hiddenSheet: boolean, payload = PAYLOAD, state = "hidden"): Uint8Array {
   return zipSync({
     "[Content_Types].xml": strToU8(
       '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
     ),
     "xl/workbook.xml": strToU8(
-      `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/>${hiddenSheet ? '<sheet name="Notes" sheetId="2" state="hidden" r:id="rId2"/>' : ""}</sheets></workbook>`,
+      `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/>${hiddenSheet ? `<sheet name="Notes" sheetId="2" state="${state}" r:id="rId2"/>` : ""}</sheets></workbook>`,
     ),
     "xl/sharedStrings.xml": strToU8(
       `<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Revenue</t></si><si><t>${hiddenSheet ? payload : "Costs"}</t></si></sst>`,
@@ -640,8 +641,16 @@ export function buildCases(PAYLOAD: string, SHORT: string): RedteamCase[] {
       category: "document",
       path: "budget.xlsx",
       expect: "detect",
-      note: "XLSX hidden sheet",
+      note: "XLSX hidden sheet (one click to unhide: a channel)",
       content: makeXlsx(true, PAYLOAD),
+    },
+    {
+      id: "D11",
+      category: "document",
+      path: "budget.xlsx",
+      expect: "detect",
+      note: "XLSX very hidden sheet (no Unhide in the UI)",
+      content: makeXlsx(true, PAYLOAD, "veryHidden"),
     },
 
     // ── Scanner evasion ──

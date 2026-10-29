@@ -158,7 +158,7 @@ describe("output formats", () => {
     const dir = tree({ "a.md": `# Hi\n\n<!-- ${NEUTRAL} -->\n` });
     const quiet = run(["scan", "--no-config", dir]);
     expect(quiet.stdout).toContain("No hidden content detected");
-    expect(quiet.stdout).toContain("use --verbose");
+    expect(quiet.stdout).toContain("info hidden (--verbose)");
     expect(quiet.stdout).not.toContain("markdown/comment");
     const verbose = run(["scan", "--no-config", "--verbose", dir]);
     expect(verbose.stdout).toContain("INFO");
@@ -287,6 +287,18 @@ describe("directory scanning", () => {
     const rules = allRules(r.data);
     expect(rules).toContain("evasion/oversized");
     expect(rules).toContain("unicode/tags");
+    // Partial scans are context for ordinary files…
+    expect(r.data.results[0].findings.find((f) => f.ruleId === "evasion/oversized")?.severity).toBe("info");
+  });
+
+  test("oversized agent instruction file → evasion/oversized is a warning", () => {
+    const dir = tree({
+      "CLAUDE.md": `# Rules
+
+${"Use tabs. ".repeat(3000)}`,
+    });
+    const r = json(["scan", "--no-config", "--max-size", "0.01", dir]);
+    // …but a warning where agents act on the content
     expect(r.data.results[0].findings.find((f) => f.ruleId === "evasion/oversized")?.severity).toBe(
       "warning",
     );

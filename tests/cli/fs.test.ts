@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { matchesIgnorePattern, readFileForScan, walkDirectory } from "../../src/cli/platform/fs.js";
+import { matchesIgnorePattern, walkDirectory } from "../../src/cli/platform/fs.js";
 import { DEFAULT_CONFIG } from "../../src/core/constants/index.js";
 
 let tmp: string;
@@ -130,23 +130,5 @@ describe("walkDirectory", () => {
     const root = tree({ "a.txt": "x" });
     symlinkSync("does-not-exist", join(root, "dangling.txt"));
     expect(await rels(root)).toEqual(["a.txt"]);
-  });
-});
-
-describe("readFileForScan", () => {
-  test("reads small files whole", async () => {
-    const root = tree({ "a.txt": "hello" });
-    const r = await readFileForScan(join(root, "a.txt"));
-    expect(new TextDecoder().decode(r.bytes)).toBe("hello");
-    expect(r.size).toBe(5);
-    expect(r.truncated).toBe(false);
-  });
-
-  test("caps at maxBytes and reports truncation", async () => {
-    const root = tree({ "big.txt": "x".repeat(1000) });
-    const r = await readFileForScan(join(root, "big.txt"), 100);
-    expect(r.bytes.length).toBe(100);
-    expect(r.size).toBe(1000);
-    expect(r.truncated).toBe(true);
   });
 });

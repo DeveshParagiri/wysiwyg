@@ -6,6 +6,7 @@ import { severityRank } from "../../src/core/policy.js";
 import type { Finding } from "../../src/core/types.js";
 import {
   buildCases,
+  CHANNEL_IDS,
   makeDocx,
   makePdf,
   makePptx,
@@ -36,6 +37,7 @@ const EXPECTED_RULE: Record<string, string> = {
   D08: "pptx/hidden-slide",
   D09: "pptx/off-slide",
   D10: "xlsx/hidden-sheet",
+  D11: "xlsx/hidden-sheet",
 };
 
 const pick = (cases: RedteamCase[], ids: string[]) => cases.filter((c) => ids.includes(c.id));
@@ -58,11 +60,13 @@ describe("red-team document cases", () => {
   }
 
   for (const c of pick(neutral, ids)) {
-    test(`${c.id} neutral payload is still ≥ warning: ${c.note}`, async () => {
+    // Channel cases (e.g. a hidden sheet: one click to unhide) report neutral prose as info.
+    const min = CHANNEL_IDS.has(c.id) ? "info" : "warning";
+    test(`${c.id} neutral payload is still ≥ ${min}: ${c.note}`, async () => {
       const fs = await scan(c);
       const hit = fs.find((f) => f.ruleId === EXPECTED_RULE[c.id]);
       expect(hit).toBeDefined();
-      expect(severityRank(hit!.severity)).toBeGreaterThanOrEqual(severityRank("warning"));
+      expect(severityRank(hit!.severity)).toBeGreaterThanOrEqual(severityRank(min));
       expect(hit!.hiddenText).toContain("third quarter figures");
     });
   }
@@ -289,11 +293,10 @@ function fixXref(pdf: string): string {
   const body = pdf.slice(0, pdf.indexOf("xref\n"));
   const offsets: number[] = [];
   const re = /(\d+) 0 obj\n/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) offsets[Number(m[1]) - 1] = m.index;
+  for (const m of body.matchAll(re)) offsets[Number(m[1]) - 1] = m.index!;
   let out = `${body}xref\n0 ${offsets.length + 1}\n0000000000 65535 f \n`;
   for (const off of offsets) out += `${String(off).padStart(10, "0")} 00000 n \n`;
-  const trailer = /trailer\n<<[^]*?>>/.exec(pdf)![0];
+  const trailer = /trailer\n<<[\s\S]*?>>/.exec(pdf)![0];
   return `${out}${trailer}\nstartxref\n${body.length}\n%%EOF\n`;
 }
 
@@ -522,7 +525,8 @@ describe("scanOoxml — XLSX", () => {
     expect(rules(fs)).toEqual(["xlsx/hidden-cells"]);
     expect(fs[0].hiddenText).toBe(NEUTRAL);
     expect(fs[0].location).toBe('sheet "Summary"');
-    expect(fs[0].severity).toBe("warning");
+    // Hidden rows are everyday Excel (one click to unhide): neutral prose is info
+    expect(fs[0].severity).toBe("info");
   });
 
   test("text in a hidden column (inline string)", () => {

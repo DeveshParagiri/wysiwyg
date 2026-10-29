@@ -60,32 +60,6 @@ const CODE = new Set(["script", "style"]);
 const HEAD = new Set(["head", "title"]);
 /** Elements handled as channels instead of by the walk. */
 const CHANNEL_ELEMENTS = new Set(["template", "noscript", "desc", "metadata"]);
-const BLOCK = new Set([
-  "p",
-  "div",
-  "section",
-  "article",
-  "main",
-  "li",
-  "td",
-  "th",
-  "body",
-  "header",
-  "footer",
-  "aside",
-  "blockquote",
-  "h1",
-  "h2",
-  "h3",
-  "h4",
-  "h5",
-  "h6",
-  "details",
-  "figure",
-  "nav",
-  "form",
-  "svg",
-]);
 
 function num(v: string | undefined): number | null {
   if (v === undefined) return null;
