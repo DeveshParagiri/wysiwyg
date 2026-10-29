@@ -1,6 +1,6 @@
 {
   "name": "wysiwyg-shield",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Find what AI agents read but humans can't see: hidden prompt injection in files, web pages, PDFs, Office docs and MCP servers.",
   "type": "module",
   "bin": {

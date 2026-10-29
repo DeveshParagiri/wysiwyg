@@ -45,18 +45,30 @@ export function matchesIgnorePattern(filePath: string, patterns: string[]): bool
  * Walk a directory. Follows symlinks (agents do), guards against cycles, and
  * never lets ignore patterns hide agent instruction files.
  */
-export async function walkDirectory(root: string, ignorePatterns: string[]): Promise<WalkedFile[]> {
+export async function walkDirectory(
+  root: string,
+  ignorePatterns: string[],
+  opts: { maxDirs?: number } = {},
+): Promise<WalkedFile[]> {
   const rootReal = await realpath(root);
   const files: WalkedFile[] = [];
   const visitedDirs = new Set<string>([rootReal]);
+  let dirsRead = 0;
 
   const walk = async (dir: string, agentFilesOnly: boolean) => {
+    // Optional work cap (latency-sensitive callers such as the SessionStart hook)
+    if (opts.maxDirs !== undefined && ++dirsRead > opts.maxDirs) return;
     let entries: Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return;
     }
+    // Deterministic order: files, then dot-directories (where agent configs live:
+    // .claude, .cursor, .github…), then other directories — so a capped walk
+    // always reaches the instruction files near the top of a repository.
+    const rank = (e: Dirent) => (e.isDirectory() ? (e.name.startsWith(".") ? 1 : 2) : 0);
+    entries.sort((a, b) => rank(a) - rank(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       const full = join(dir, entry.name);
       const rel = relative(root, full).split(sep).join("/");
